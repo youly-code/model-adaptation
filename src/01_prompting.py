@@ -57,7 +57,7 @@ def print_prompt_and_response(technique_name: str, prompt: str, response: str):
 
 
 def basic_prompt_example():
-    question = "What are the potential impacts of AI on privacy in smart cities?"
+    question = "What percentage of responses from Large Language Models are hallucinations?"
     response = get_llm_response(question)
     print_prompt_and_response("Basic Prompt", question, response)
 
@@ -379,19 +379,331 @@ def guided_feedback_prompting_example():
 # and for directing the AI's focus to specific aspects of a complex topic.
 
 
-# ... (continue with other prompting techniques)
+# Add these new functions to the existing code
+
+
+def persona_based_prompting_example():
+    """Demonstrates how to get responses tailored to different audience levels."""
+    topic = "How does machine learning work?"
+    personas = [
+        "a 10-year-old student",
+        "a business executive",
+        "a computer science graduate",
+    ]
+
+    for persona in personas:
+        prompt = f"""
+        Explain {topic} to {persona}.
+        Keep the explanation appropriate for their background and use relevant analogies 
+        they would understand based on their context.
+        """
+        response = get_llm_response(prompt)
+        print_prompt_and_response(f"Persona-Based ({persona})", prompt, response)
+
+
+# Explanation: Persona-based prompting adapts the AI's response style and complexity to match
+# different audience needs. This technique is effective because it ensures information is
+# accessible and relevant to specific audiences. It's particularly useful in:
+# - Educational settings with diverse student backgrounds
+# - Business communications across different departments
+# - Technical documentation for various stakeholder groups
+# The key is specifying not just who the audience is, but also considering their context
+# and likely frame of reference.
+
+
+def template_based_prompting_example():
+    """Shows how to use templates for consistent responses."""
+    template = """
+    Topic: {topic}
+    Context: {context}
+    
+    Please analyze this topic using the following structure:
+    1. Definition:
+       - Simple explanation
+       - Key components
+    
+    2. Applications:
+       - Current use cases
+       - Potential future uses
+    
+    3. Implications:
+       - Benefits
+       - Challenges
+       - Ethical considerations
+    
+    4. Recommendations:
+       - Best practices
+       - Implementation guidelines
+    """
+
+    example = {
+        "topic": "Facial recognition in public spaces",
+        "context": "Growing adoption of surveillance technologies in smart cities",
+    }
+
+    prompt = template.format(**example)
+    response = get_llm_response(prompt)
+    print_prompt_and_response("Template-Based", prompt, response)
+
+
+# Explanation: Template-based prompting uses predefined structures to ensure consistent
+# and comprehensive responses. This technique is valuable because it:
+# - Maintains consistency across multiple queries
+# - Ensures all important aspects are covered
+# - Makes responses easier to process and compare
+# - Reduces the need for follow-up questions
+# It's particularly useful in business settings where standardized analysis is needed,
+# or in research contexts where systematic evaluation is important.
+
+
+def comparative_analysis_prompting_example():
+    """Demonstrates how to prompt for detailed comparisons."""
+    prompt = """
+    Compare and contrast the following AI technologies:
+    1. Traditional Machine Learning
+    2. Deep Learning
+    3. Reinforcement Learning
+    
+    Use this structure:
+    1. Key Characteristics
+    2. Typical Applications
+    3. Advantages
+    4. Limitations
+    5. Resource Requirements
+    
+    Present the comparison in a way that highlights the unique aspects of each approach
+    and helps in understanding when to use which technology.
+    """
+    response = get_llm_response(prompt)
+    print_prompt_and_response("Comparative Analysis", prompt, response)
+
+
+# Explanation: Comparative analysis prompting helps in understanding relationships and
+# trade-offs between different options. This technique is effective because it:
+# - Forces systematic comparison across multiple dimensions
+# - Highlights key differences and similarities
+# - Helps in decision-making processes
+# - Provides a comprehensive view of alternatives
+# It's especially useful when evaluating technologies, methodologies, or approaches
+# where understanding relative strengths and weaknesses is crucial.
+
+
+def iterative_refinement_prompting_example():
+    """Shows how to iteratively improve responses through multiple prompts."""
+    initial_question = (
+        "What are the key considerations for implementing AI in healthcare?"
+    )
+
+    # Initial broad response
+    initial_prompt = f"Provide a high-level overview: {initial_question}"
+    initial_response = get_llm_response(initial_prompt)
+
+    # First refinement - focus on technical aspects
+    technical_prompt = f"""
+    Based on this overview:
+    {initial_response}
+    
+    Deep dive into the technical implementation challenges and requirements.
+    Focus on infrastructure, data management, and system integration.
+    """
+    technical_response = get_llm_response(technical_prompt)
+
+    # Second refinement - focus on ethical considerations
+    ethical_prompt = f"""
+    Based on this overview:
+    {initial_response}
+    
+    And given the technical considerations:
+    {technical_response}
+    
+    Analyze the ethical implications and necessary safeguards.
+    Address privacy, bias, and patient rights.
+    """
+    ethical_response = get_llm_response(ethical_prompt)
+
+    print_prompt_and_response(
+        "Iterative Refinement - Initial", initial_prompt, initial_response
+    )
+    print_prompt_and_response(
+        "Iterative Refinement - Technical", technical_prompt, technical_response
+    )
+    print_prompt_and_response(
+        "Iterative Refinement - Ethical", ethical_prompt, ethical_response
+    )
+
+
+# Explanation: Iterative refinement prompting uses a series of connected prompts to
+# progressively develop more detailed and nuanced responses. This technique is powerful because:
+# - It breaks complex topics into manageable chunks
+# - Each iteration builds on previous responses
+# - It allows for focused exploration of specific aspects
+# - It helps maintain context while diving deeper
+# This approach is particularly useful for complex topics where a single prompt
+# might not capture all necessary details, or when different aspects need
+# separate but connected analysis.
+
+
+def scenario_based_prompting_example():
+    """Demonstrates how to use realistic scenarios for context-rich responses."""
+    scenario = """
+    Scenario: MediCare Hospital is planning to implement an AI system for:
+    1. Patient triage in the emergency department
+    2. Predicting potential readmissions
+    3. Scheduling staff based on predicted patient loads
+    
+    The hospital has:
+    - 500 beds
+    - 1,200 staff members
+    - Electronic health records going back 5 years
+    - A mix of urban and rural patients
+    - Limited AI expertise on staff
+    
+    Required: Develop an implementation plan that addresses technical, 
+    operational, and ethical considerations.
+    """
+    response = get_llm_response(scenario)
+    print_prompt_and_response("Scenario-Based", scenario, response)
+
+
+# Explanation: Scenario-based prompting provides rich context through realistic
+# situations. This technique is effective because:
+# - It grounds abstract concepts in concrete situations
+# - It helps users understand practical applications
+# - It forces consideration of real-world constraints
+# - It makes responses more actionable and relevant
+# This approach is particularly valuable in training contexts, case studies,
+# and when helping users understand how to apply concepts in practice.
+# The key is providing enough detail to make the scenario realistic while
+# keeping it focused on the learning objectives.
+
+
+# Verification examples
+
+
+def self_verification_prompting_example():
+    """Demonstrates advanced self-verification prompting technique."""
+    problem = """
+    In a class of 30 students:
+    - 2/5 of the students play soccer
+    - half of the students play basketball
+    - a quarter of the students play both sports
+    - 1/3 of the students play guitar and 2 of them play both sports and guitar
+    
+    How many students don't play either sport and play guitar?
+    """
+
+    verification_prompt = f"""
+    Problem: {problem}
+    
+    Please solve this problem following these steps:
+    1. First, provide your initial calculation
+    2. Then verify your work by:
+       - Breaking down each component
+       - Checking your assumptions
+       - Identifying potential errors
+       - Recalculating using a different method
+       - Comparing both results
+    3. If you find any discrepancies, explain and correct them
+    4. Critique the challenge of the problem if you think it's stated incorrectly
+    5. Provide your final, verified answer
+    
+    Show all your work and reasoning. Readable text format, no code.
+    """
+    response = get_llm_response(verification_prompt)
+    print_prompt_and_response("Self-Verification", verification_prompt, response)
+
+
+def logical_verification_prompting_example():
+    """Shows how to use verification through logical constraints."""
+    query = """
+    In a class of 30 students:
+    - 2/5 of the students play soccer
+    - half of the students play basketball
+    - a quarter of the students play both sports
+    - 1/3 of the students play guitar and 2 of them play both sports and guitar
+    
+    How many students don't play either sport and play guitar?
+    """
+
+    prompt = f"""
+    Problem: {query}
+    
+    Please solve this problem using the following verification framework:
+    
+    1. Initial Solution:
+       - Show your calculation
+       - Explain your reasoning
+    
+    2. Verify Logical Constraints:
+       - Total students must equal 30
+       - Students in both sports ≤ minimum of individual sports
+       - Total students in either sport ≤ sum of individual sports
+       - Final answer cannot be negative
+    
+    3. Visual Verification:
+       - Draw a Venn diagram (describe it in text)
+       - Verify numbers match across all representations
+    
+    4. Edge Case Check:
+       - What if all numbers were equal?
+       - What if there was no overlap?
+       - Do these cases reveal any issues in your logic?
+       
+    5. Critique the challenge of the problem if you think it's stated incorrectly
+    
+    6. Final Verified Answer:
+       - State your conclusion
+       - Confirm all constraints are satisfied
+    """
+    response = get_llm_response(prompt)
+    print_prompt_and_response("Logical Verification", prompt, response)
+
+
+# Explanation: Modern self-verification prompting has evolved beyond simple rechecking.
+# It now incorporates multiple verification strategies:
+# - Breaking down complex problems into verifiable components
+# - Using different methods to cross-validate results
+# - Applying logical constraints and edge cases
+# - Leveraging visual representations for verification
+# - Systematic error checking
+#
+# This technique is particularly effective because it:
+# - Reduces errors in complex calculations
+# - Helps identify hidden assumptions
+# - Provides multiple perspectives on the same problem
+# - Forces systematic thinking about edge cases
+# - Creates more reliable and trustworthy outputs
+#
+# It's especially useful in:
+# - Mathematical calculations
+# - Logical reasoning problems
+# - Data analysis tasks
+# - Decision-making scenarios
+# - Any situation where accuracy is crucial
+#
+# The key is to structure the verification process so it's not just
+# repeating the same calculation, but approaching the problem from
+# different angles to ensure robustness of the solution.
+
 
 if __name__ == "__main__":
     client = initialize_openai_client()
     basic_prompt_example()
-    structured_prompt_example()
-    chain_of_thought_example()
-    few_shot_example()
-    role_playing_example()
-    task_decomposition_example()
-    zero_shot_example()
-    self_consistency_example()
-    constrained_generation_example()
-    socratic_method_example()
-    reflective_prompting_example()
-    guided_feedback_prompting_example()
+    # structured_prompt_example()
+    # chain_of_thought_example()
+    # few_shot_example()
+    # role_playing_example()
+    # task_decomposition_example()
+    # zero_shot_example()
+    # self_consistency_example()
+    # constrained_generation_example()
+    # socratic_method_example()
+    # reflective_prompting_example()
+    # guided_feedback_prompting_example()
+    # persona_based_prompting_example()
+    # template_based_prompting_example()
+    # comparative_analysis_prompting_example()
+    # iterative_refinement_prompting_example()
+    # scenario_based_prompting_example()
+    # self_verification_prompting_example()
+    # logical_verification_prompting_example()
