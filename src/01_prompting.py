@@ -686,6 +686,66 @@ def logical_verification_prompting_example():
 # different angles to ensure robustness of the solution.
 
 
+def join_list(items: List[str]) -> str:
+    """Join list items with newlines, adding numbers."""
+    return "\n".join(f"\n - {i+1}. {item}" for i, item in enumerate(items)) if items else ""
+
+
+def generate_problem_solving_clarifications(
+    questions: List[str] = [], answers: List[str] = []
+) -> str:
+    return f"""
+    Problem to solve: 
+      - 2/5 of the students play soccer
+      - half of the students play basketball
+      - a quarter of the students play both sports
+      - 1/3 of the students play guitar and 2 of them play both sports and guitar
+    How many students don't play either sport and play guitar?
+    
+    Your questions: 
+    {join_list(questions)}
+    
+    My answers to your questions: 
+    {join_list(answers)}
+
+    Before solving this problem:
+    1. First check if there are any ambiguities, missing information, or inconsistencies in the problem.
+    
+    2. If you find any issues:
+       - Ask ONE clear, specific question to resolve the most critical ambiguity
+       - Explain why this clarification is needed
+       - Wait for an answer before proceeding further
+       
+    3. If the problem is completely clear:
+       - State that no clarification is needed
+       - Proceed with solving the problem step by step
+
+    4. After receiving any clarification:
+       - Acknowledge the clarification
+       - Check if any other critical ambiguities remain
+       - If clear, proceed with the solution
+       - If not, ask the next most important question
+
+    Remember: Ask only ONE question at a time, focusing on the most critical issue first.
+    """
+
+
+# Example usage
+responses = []
+
+prompt = generate_problem_solving_clarifications(None, None)
+response = get_llm_response(prompt)
+responses.append(response)
+
+print_prompt_and_response("Problem Solving", prompt, response)
+
+prompt = generate_problem_solving_clarifications(responses, ["Maybe"])
+response = get_llm_response(prompt)
+responses.append(response)
+
+print_prompt_and_response("Problem Solving", prompt, response)
+
+
 if __name__ == "__main__":
     client = initialize_openai_client()
     basic_prompt_example()
