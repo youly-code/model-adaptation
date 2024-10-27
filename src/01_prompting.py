@@ -57,7 +57,9 @@ def print_prompt_and_response(technique_name: str, prompt: str, response: str):
 
 
 def basic_prompt_example():
-    question = "What percentage of responses from Large Language Models are hallucinations?"
+    question = (
+        "What percentage of responses from Large Language Models are hallucinations?"
+    )
     response = get_llm_response(question)
     print_prompt_and_response("Basic Prompt", question, response)
 
@@ -688,7 +690,11 @@ def logical_verification_prompting_example():
 
 def join_list(items: List[str]) -> str:
     """Join list items with newlines, adding numbers."""
-    return "\n".join(f"\n - {i+1}. {item}" for i, item in enumerate(items)) if items else ""
+    return (
+        "\n".join(f"\n - {i+1}. {item}" for i, item in enumerate(items))
+        if items
+        else ""
+    )
 
 
 def generate_problem_solving_clarifications(
@@ -730,22 +736,6 @@ def generate_problem_solving_clarifications(
     """
 
 
-# Example usage
-responses = []
-
-prompt = generate_problem_solving_clarifications(None, None)
-response = get_llm_response(prompt)
-responses.append(response)
-
-print_prompt_and_response("Problem Solving", prompt, response)
-
-prompt = generate_problem_solving_clarifications(responses, ["Maybe"])
-response = get_llm_response(prompt)
-responses.append(response)
-
-print_prompt_and_response("Problem Solving", prompt, response)
-
-
 if __name__ == "__main__":
     client = initialize_openai_client()
     basic_prompt_example()
@@ -767,3 +757,18 @@ if __name__ == "__main__":
     # scenario_based_prompting_example()
     # self_verification_prompting_example()
     # logical_verification_prompting_example()
+
+    # Example usage
+    responses = []
+
+    prompt = generate_problem_solving_clarifications(None, None)
+    response = get_llm_response(prompt)
+    responses.append(response)
+
+    print_prompt_and_response("Problem Solving", prompt, response)
+
+    prompt = generate_problem_solving_clarifications(responses, ["Maybe"])
+    response = get_llm_response(prompt)
+    responses.append(response)
+
+    print_prompt_and_response("Problem Solving", prompt, response)
