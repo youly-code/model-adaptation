@@ -61,9 +61,10 @@ def basic_prompt_example():
     response = get_llm_response(question)
     print_prompt_and_response("Basic Prompt", question, response)
 
-# Explanation: Basic prompting is the simplest form of interaction with an AI model. 
-# It works well for straightforward questions because it allows the model to use its 
-# general knowledge without constraints. However, it may lack specificity or structure 
+
+# Explanation: Basic prompting is the simplest form of interaction with an AI model.
+# It works well for straightforward questions because it allows the model to use its
+# general knowledge without constraints. However, it may lack specificity or structure
 # in complex scenarios.
 
 
@@ -94,6 +95,7 @@ def structured_prompt_example():
     response = get_llm_response(prompt)
     print_prompt_and_response("Structured Prompt", prompt, response)
 
+
 # Explanation: Structured prompting provides a clear format and expectations for the AI's response.
 # This technique works well because it guides the model to organize information in a specific way,
 # ensuring that all required elements are addressed. It's particularly useful for complex queries
@@ -115,6 +117,7 @@ def chain_of_thought_example():
     """
     response = get_llm_response(prompt)
     print_prompt_and_response("Chain of Thought", prompt, response)
+
 
 # Explanation: Chain of Thought prompting encourages the AI to break down its reasoning process.
 # This technique is effective because it mimics human problem-solving, allowing for more transparent
@@ -138,9 +141,10 @@ def few_shot_example():
     response = get_llm_response(prompt)
     print_prompt_and_response("Few-Shot Learning", prompt, response)
 
+
 # Explanation: Few-shot learning provides the AI with examples before asking the main question.
 # This technique works well because it gives the model a pattern to follow, improving consistency
-# and accuracy in responses. It's especially useful when you want the AI to mimic a specific 
+# and accuracy in responses. It's especially useful when you want the AI to mimic a specific
 # response style or format.
 
 
@@ -159,6 +163,7 @@ def role_playing_example():
     print_prompt_and_response(
         "Role-Playing", f"System: {system_prompt}\n\nUser: {user_prompt}", response
     )
+
 
 # Explanation: Role-playing prompts the AI to adopt a specific persona or expertise.
 # This technique is effective because it narrows the model's focus to a particular perspective,
@@ -190,9 +195,10 @@ def task_decomposition_example():
     response = get_llm_response(prompt)
     print_prompt_and_response("Task Decomposition", prompt, response)
 
+
 # Explanation: Task decomposition breaks down complex problems into smaller, manageable steps.
-# This technique works well because it helps the AI (and the user) approach complex issues 
-# systematically. It's particularly useful for planning or strategizing tasks that involve 
+# This technique works well because it helps the AI (and the user) approach complex issues
+# systematically. It's particularly useful for planning or strategizing tasks that involve
 # multiple components or stages.
 
 
@@ -205,6 +211,7 @@ def zero_shot_example():
     """
     response = get_llm_response(prompt)
     print_prompt_and_response("Zero-Shot Learning", prompt, response)
+
 
 # Explanation: Zero-shot learning tests the AI's ability to answer questions without specific examples.
 # This technique works because it leverages the model's general knowledge and ability to understand
@@ -233,6 +240,7 @@ def self_consistency_example():
     response = get_llm_response(prompt)
     print_prompt_and_response("Self-Consistency", prompt, response)
 
+
 # Explanation: Self-consistency prompts the AI to generate multiple perspectives and then synthesize them.
 # This technique is effective because it encourages a more comprehensive and balanced approach to a topic.
 # It's particularly useful for complex issues where multiple viewpoints need to be considered.
@@ -253,42 +261,122 @@ def constrained_generation_example():
     response = get_llm_response(prompt)
     print_prompt_and_response("Constrained Generation", prompt, response)
 
+
 # Explanation: Constrained generation sets specific limits or requirements for the AI's response.
 # This technique works well because it challenges the AI to be creative within defined boundaries,
-# often resulting in more focused and precise outputs. It's useful when you need responses in a 
+# often resulting in more focused and precise outputs. It's useful when you need responses in a
 # very specific format or style.
 
 
 def socratic_method_example():
     topic = "The impact of social media on mental health"
     initial_question = "What are the primary ways social media affects mental health?"
-    
-    print(f"\n{'-'*20} Socratic Method {'-'*20}")
-    print(f"Topic: {topic}\n")
-    
-    question = initial_question
-    for i in range(4):  # We'll do 4 rounds of questioning
-        print(f"Q{i+1}: {question}")
-        response = get_llm_response(f"Question: {question}\nPlease provide a concise answer and then ask a follow-up question to dig deeper into the topic of '{topic}'.")
+
+    questions = [initial_question]
+    answers = []
+
+    for i in range(3):  # Let's do 3 rounds of questions
+        current_question = questions[-1]
+        prompt = f"""
+        Topic: {topic}
+        Previous questions: {questions[:-1]}
+        Previous answers: {answers}
         
-        # Split the response into the answer and the follow-up question
-        parts = response.split("Follow-up question:", 1)
-        answer = parts[0].strip()
-        question = parts[1].strip() if len(parts) > 1 else "Can you elaborate on that?"
+        Current question: {current_question}
         
-        print(f"A: {answer}\n")
-    
-    # Final conclusion
-    conclusion_prompt = f"Based on this dialogue about '{topic}', what key insights can we draw? Provide a concise summary."
-    conclusion = get_llm_response(conclusion_prompt)
-    print("Conclusion:")
-    print(conclusion)
-    print(f"{'-'*50}\n")
+        Please provide a concise answer to the current question, and then ask a follow-up question 
+        that digs deeper into the topic, challenging assumptions or exploring implications of the answer.
+        
+        Format your response as:
+        Answer: [Your answer here]
+        Follow-up question: [Your follow-up question here]
+        """
+
+        response = get_llm_response(prompt)
+        print_prompt_and_response(f"Socratic Method - Round {i+1}", prompt, response)
+
+        # Parse the response to get the answer and next question
+        answer, next_question = response.split("Follow-up question:")
+        answers.append(answer.strip().replace("Answer: ", ""))
+        questions.append(next_question.strip())
+
 
 # Explanation: The Socratic method uses a series of questions to stimulate critical thinking and illuminate ideas.
 # This technique is effective because it encourages the AI to explore a topic deeply, considering multiple angles
 # and uncovering underlying assumptions. It's particularly useful for complex topics that benefit from
 # a dialogue-like exploration and for generating insightful questions for further investigation.
+
+
+def reflective_prompting_example():
+    initial_question = "How can AI be used to address climate change?"
+    prompt = f"""
+    Initial question: {initial_question}
+
+    Please provide an initial response to this question. Then, reflect on your answer by considering:
+    1. What assumptions did you make in your response?
+    2. Are there any potential biases in your answer?
+    3. What additional information would be helpful to provide a more comprehensive response?
+    4. How might different stakeholders view this solution differently?
+
+    After reflection, provide an updated, more nuanced response.
+
+    Format your answer as follows:
+    Initial response: [Your initial response here]
+
+    Reflection:
+    1. Assumptions: [List assumptions]
+    2. Potential biases: [Discuss potential biases]
+    3. Additional information needed: [List additional information]
+    4. Stakeholder perspectives: [Discuss different viewpoints]
+
+    Updated response: [Your updated, more nuanced response here]
+    """
+    response = get_llm_response(prompt)
+    print_prompt_and_response("Reflective Prompting", prompt, response)
+
+
+# Explanation: Reflective prompting encourages the AI to critically examine its own responses.
+# This technique is effective because it promotes a more thoughtful and comprehensive analysis,
+# addressing potential shortcomings in the initial response. It's particularly useful for
+# complex topics where considering multiple perspectives and acknowledging limitations is important.
+
+
+def guided_feedback_prompting_example():
+    initial_question = (
+        "What are the potential impacts of AI on job markets in the next decade?"
+    )
+    prompt = f"""
+    Initial question: {initial_question}
+
+    Please provide an initial response to this question.
+    """
+    initial_response = get_llm_response(prompt)
+
+    feedback_prompt = f"""
+    Your initial response was:
+    {initial_response}
+
+    This response is a good start, but let's improve it with the following guidance:
+    1. Consider more diverse scenarios, including edge cases.
+    2. Discuss both short-term and long-term risks.
+    3. Include potential mitigation strategies for each risk.
+    4. Address the ethical implications of these risks.
+
+    Please respond by responding to the feedback then providing an updated response incorporating this feedback.
+    """
+    updated_response = get_llm_response(feedback_prompt)
+
+    print_prompt_and_response(
+        "Guided Feedback Prompting",
+        f"{feedback_prompt[:300]}...\n\nUpdated Response after feedback:",
+        updated_response,
+    )
+
+
+# Explanation: Guided feedback prompting involves providing specific feedback or guidance to the AI
+# after its initial response. This technique allows the AI to refine and improve its answer based on
+# targeted suggestions. It's particularly useful for obtaining more comprehensive, nuanced responses
+# and for directing the AI's focus to specific aspects of a complex topic.
 
 
 # ... (continue with other prompting techniques)
@@ -305,3 +393,5 @@ if __name__ == "__main__":
     self_consistency_example()
     constrained_generation_example()
     socratic_method_example()
+    reflective_prompting_example()
+    guided_feedback_prompting_example()
