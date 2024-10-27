@@ -9,3 +9,8 @@ pytest
 transformers
 scikit-learn
 sentence-transformers
+openai
+langchain
+pandas
+tqdm
+
