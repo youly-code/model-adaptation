@@ -1,0 +1,11 @@
+ollama
+chromadb
+llama-cpp-python
+numpy   
+appdirs 
+pydantic
+torch
+pytest
+transformers
+scikit-learn
+sentence-transformers
