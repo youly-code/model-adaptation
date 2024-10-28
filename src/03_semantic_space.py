@@ -1,3 +1,57 @@
+"""
+Semantic Space Visualization Module
+=================================
+
+This module provides tools for visualizing and analyzing semantic relationships in text data
+using various dimensionality reduction and visualization techniques.
+
+Key Features:
+------------
+- Text embedding generation using SentenceTransformer
+- Multiple dimensionality reduction methods (t-SNE, PCA, UMAP, MDS, SVD)
+- 2D and 3D visualization capabilities
+- Semantic similarity heatmaps
+- Hierarchical clustering dendrograms
+- Word analogy visualization
+
+Technical Details:
+----------------
+- Uses all-MiniLM-L6-v2 model for generating embeddings
+- Supports both categorical and non-categorical data visualization
+- Interactive 3D plots using Plotly
+- Customizable visualization parameters
+- Efficient handling of varying dataset sizes
+
+Usage Example:
+-------------
+    visualizer = SemanticSpaceVisualizer()
+    texts = ["artificial intelligence", "machine learning", "deep learning"]
+    categories = ["AI", "AI", "AI"]
+    
+    # Generate 2D visualization
+    visualizer.visualize_2d_scatter(texts, categories)
+    
+    # Create semantic heatmap
+    visualizer.visualize_semantic_heatmap(texts)
+
+Dependencies:
+------------
+- numpy: Numerical computations
+- matplotlib: Static plotting
+- plotly: Interactive visualization
+- sklearn: Dimensionality reduction
+- sentence_transformers: Text embeddings
+- seaborn: Enhanced visualization
+- pandas: Data manipulation
+- umap-learn: UMAP dimensionality reduction
+
+Notes:
+------
+- The module automatically adjusts visualization parameters based on input size
+- Supports both research and production use cases
+- Implements best practices for scientific visualization
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE, MDS
