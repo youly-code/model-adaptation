@@ -216,8 +216,8 @@ class SemanticSpaceVisualizer:
         categories = ["Technology"] * 4 + ["Nature"] * 4 + ["Space"] * 4
 
         # 2D visualizations with different reduction methods
-        for method in ["tsne", "pca", "umap", "mds"]:
-            self.visualize_2d_scatter(texts, categories, method=method)
+        # for method in ["tsne", "pca", "umap", "mds"]:
+        #     self.visualize_2d_scatter(texts, categories, method=method)
 
         # 3D interactive visualization
         self.visualize_3d_interactive(texts, categories)
@@ -289,8 +289,9 @@ class SemanticSpaceVisualizer:
 if __name__ == "__main__":
     visualizer = SemanticSpaceVisualizer()
 
-    print("Running all visualization demos...")
+    # print("Running all visualization demos...")
     visualizer.demonstrate_all_visualizations()
 
-    print("\nDemonstrating word analogies...")
-    visualizer.demonstrate_analogies()
+    #print("\nDemonstrating word analogies...")
+    #visualizer.demonstrate_analogies()
+
