@@ -13,4 +13,9 @@ openai
 langchain
 pandas
 tqdm
+plotly
+seaborn
+matplotlib
+umap-learn
+scipy
 
