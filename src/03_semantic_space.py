@@ -12,6 +12,41 @@ import pandas as pd
 
 
 class SemanticSpaceVisualizer:
+    """
+    SemanticSpaceVisualizer is a class for generating and visualizing semantic embeddings of text data. It provides various methods for dimensionality reduction and visualization, including 2D and 3D plots, heatmaps, and dendrograms.
+
+    Attributes:
+        model (SentenceTransformer): A pre-trained sentence transformer model for generating embeddings.
+
+    Methods:
+        get_embeddings(texts):
+            Generate embeddings for a list of texts.
+
+        reduce_dimensions(embeddings, method="tsne", n_components=2):
+            Reduce dimensionality using the specified method.
+
+        visualize_2d_scatter(texts, categories=None, method="tsne", title=None):
+            Create a 2D scatter plot of the semantic space.
+
+        visualize_3d_interactive(texts, categories=None, method="tsne"):
+            Create an interactive 3D visualization using Plotly.
+
+        visualize_semantic_heatmap(texts, categories=None):
+            Create a heatmap of semantic similarities.
+
+        visualize_cluster_dendogram(texts):
+            Create a hierarchical clustering dendrogram.
+
+        demonstrate_all_visualizations():
+            Run all visualization demos with example data.
+
+        visualize_word_analogies(analogies):
+            Visualize word analogies in semantic space.
+
+        demonstrate_analogies():
+            Demonstrate word analogies visualization.
+    """
+
     def __init__(self):
         self.model = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -26,7 +61,9 @@ class SemanticSpaceVisualizer:
         if method == "tsne":
             # Set perplexity to n_samples/3 (or minimum of 5)
             perplexity = min(max(5, embeddings.shape[0] // 3), 30)
-            reducer = TSNE(n_components=n_components, random_state=42, perplexity=perplexity)
+            reducer = TSNE(
+                n_components=n_components, random_state=42, perplexity=perplexity
+            )
         elif method == "pca":
             reducer = PCA(n_components=n_components)
         elif method == "umap":
