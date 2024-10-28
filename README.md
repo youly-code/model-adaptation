@@ -1,6 +1,6 @@
 # Model Adaptation Examples
 
-This repository contains example code demonstrating various model adaptation techniques covered in the Model Adaptation lecture at Fontys University of Applied Sciences (FICT), minor AI for Society by Leon van Bokhorst.
+This repository contains example code demonstrating various model adaptation techniques covered in the Model Adaptation lecture at Fontys University of Applied Sciences (FICT), minor [AI for Society](https://www.fontys.nl/en/Study-at-Fontys/Exchange-programmes/Artificial-Intelligence-For-Society.htm) by Leon van Bokhorst.
 
 ## Overview
 
