@@ -18,4 +18,10 @@ seaborn
 matplotlib
 umap-learn
 scipy
+peft
+datasets
+tiktoken
+tqdm
+blobfile
+sentencepiece
 

@@ -1,7 +1,12 @@
 .DS_Store
 .ipynb_checkpoints/
 .vscode/
-.cursorrules    
+.cursorrules  
+./checkpoints/
+./logs/
+/lora_finetuned/
+/lora_finetuned_model/
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
