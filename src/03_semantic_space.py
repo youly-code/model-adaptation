@@ -60,7 +60,7 @@ class SemanticSpaceVisualizer:
                 "x": coords_2d[:, 0],
                 "y": coords_2d[:, 1],
                 "text": texts,
-                "category": categories if categories else [""] * len(texts),
+                "category": categories or [""] * len(texts),
             }
         )
 
@@ -100,7 +100,7 @@ class SemanticSpaceVisualizer:
                 "y": coords_3d[:, 1],
                 "z": coords_3d[:, 2],
                 "text": texts,
-                "category": categories if categories else [""] * len(texts),
+                "category": categories or [""] * len(texts),
             }
         )
 
@@ -194,7 +194,7 @@ class SemanticSpaceVisualizer:
     def visualize_word_analogies(self, analogies: List[Tuple[str, str, str, str]]):
         """Visualize word analogies in semantic space."""
         # Get all unique words from analogies
-        all_words = list(set([word for analogy in analogies for word in analogy]))
+        all_words = list({word for analogy in analogies for word in analogy})
 
         # Get embeddings
         embeddings = self.get_embeddings(all_words)

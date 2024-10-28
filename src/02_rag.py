@@ -18,6 +18,12 @@ OLLAMA_EMBEDDING_MODEL = "nomic-embed-text"
 MAX_TOKENS = 2000
 TEMPERATURE = 0.7
 
+# Initialize clients
+if USE_OLLAMA:
+    client = ollama.Client()
+else:
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 
 @dataclass
 class Document:
@@ -45,9 +51,10 @@ class RAGSystem:
         """Initialize the RAG system."""
         self.documents: List[Document] = []
         if not USE_OLLAMA:
-            if not (api_key := os.getenv("OPENAI_API_KEY")):
+            if api_key := os.getenv("OPENAI_API_KEY"):
+                self.client = OpenAI(api_key=api_key)
+            else:
                 raise ValueError("OPENAI_API_KEY environment variable not set")
-            self.client = OpenAI(api_key=api_key)
 
     def add_document(self, content: str, metadata: Dict = None) -> None:
         """Add a document to the knowledge base."""
