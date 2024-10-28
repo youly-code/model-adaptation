@@ -698,9 +698,14 @@ def join_list(items: List[str]) -> str:
 
 
 def generate_problem_solving_clarifications(
-    questions: List[str] = [], answers: List[str] = []
+    questions: List[str] = None, answers: List[str] = None
 ) -> str:
-    return f"""
+    if questions is None:
+        questions = []
+    if answers is None:
+        answers = []
+
+    prompt = f"""
     Problem to solve: 
       - 2/5 of the students play soccer
       - half of the students play basketball
@@ -734,6 +739,19 @@ def generate_problem_solving_clarifications(
 
     Remember: Ask only ONE question at a time, focusing on the most critical issue first.
     """
+    
+    responses = []
+
+    prompt = generate_problem_solving_clarifications(None, None)
+    response = get_llm_response(prompt)
+    responses = [response]
+    print_prompt_and_response("Problem Solving", prompt, response)
+
+    prompt = generate_problem_solving_clarifications(responses, ["Maybe"])
+    response = get_llm_response(prompt)
+    responses.append(response)
+
+    print_prompt_and_response("Problem Solving", prompt, response)
 
 
 if __name__ == "__main__":
@@ -759,16 +777,4 @@ if __name__ == "__main__":
     # logical_verification_prompting_example()
 
     # Example usage
-    responses = []
-
-    prompt = generate_problem_solving_clarifications(None, None)
-    response = get_llm_response(prompt)
-    responses.append(response)
-
-    print_prompt_and_response("Problem Solving", prompt, response)
-
-    prompt = generate_problem_solving_clarifications(responses, ["Maybe"])
-    response = get_llm_response(prompt)
-    responses.append(response)
-
-    print_prompt_and_response("Problem Solving", prompt, response)
+    generate_problem_solving_clarifications()
