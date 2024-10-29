@@ -1,16 +1,50 @@
+from dataclasses import dataclass
 from openai import OpenAI
 from typing import List
 import json
 import os
 from dotenv import load_dotenv
+import ollama  # Import Ollama for local LLM integration
 
 load_dotenv()
 
-# Define model constants
-CHAT_MODEL = "gpt-4o-mini"
-EMBEDDING_MODEL = "text-embedding-3-small"
 
-client: OpenAI
+@dataclass(frozen=True)
+class Config:
+    """Configuration settings for the RAG system."""
+
+    PROMPT_ONLY: bool = False
+    USE_OLLAMA: bool = True
+
+    # OpenAI Settings
+    OPENAI_CHAT_MODEL: str = "gpt-4o-mini"  # or "gpt-3.5-turbo" for lower cost
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+
+    # Ollama Settings
+    OLLAMA_CHAT_MODEL: str = (
+        "llama3.2:latest"  # Ensure this model is correct and accessible
+    )
+    OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
+
+    # Generation Settings
+    MAX_TOKENS: int = 2000
+    TEMPERATURE: float = 0.7
+
+    # API Keys (consider moving to environment variables)
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+
+
+# Validate OpenAI API key if not using Ollama
+if not Config.USE_OLLAMA and not Config.OPENAI_API_KEY:
+    raise ValueError(
+        "OPENAI_API_KEY environment variable is required when USE_OLLAMA=False"
+    )
+
+# Initialize clients
+if Config.USE_OLLAMA:
+    client = ollama.Client()
+else:
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def initialize_openai_client() -> OpenAI:
@@ -20,29 +54,65 @@ def initialize_openai_client() -> OpenAI:
     return OpenAI(api_key=api_key)
 
 
-# Function to get response based on the selected model
-def get_llm_response(prompt: str, system_prompt: str = None) -> str:
-    """Get a response from OpenAI's chat model."""
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    else:
-        messages.append(
-            {
-                "role": "system",
-                "content": "You are a helpful assistant for the minor AI for Society.",
-            }
-        )
-    messages.append({"role": "user", "content": prompt})
+def initialize_ollama_client() -> ollama.Client:
+    """Initialize and return an Ollama client."""
+    return ollama.Client()
 
-    response = client.chat.completions.create(model=CHAT_MODEL, messages=messages)
-    return response.choices[0].message.content
+
+# Initialize the appropriate client based on the USE_OLLAMA flag
+if Config.USE_OLLAMA:
+    client = initialize_ollama_client()
+else:
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+# Function to get response based on the selected model
+def get_llm_response(prompt: str) -> str:
+    """Get a response from the selected chat model."""
+    if Config.PROMPT_ONLY:
+        return prompt
+
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant for the minor AI for Society.",
+        },
+        {"role": "user", "content": prompt},
+    ]
+    response = None
+    try:
+        if Config.USE_OLLAMA:
+            response = ollama.chat(
+                model=Config.OLLAMA_CHAT_MODEL,
+                messages=messages,
+            )
+            return response["message"]["content"]
+        else:
+            response = client.chat.completions.create(
+                model=Config.OPENAI_CHAT_MODEL,
+                messages=messages,
+                max_tokens=Config.MAX_TOKENS,
+                temperature=Config.TEMPERATURE,
+            )
+            return response.choices[0].message.content
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        raise e from e
 
 
 def get_embedding(text: str) -> List[float]:
     """Get an embedding from the embedding model."""
-    response = client.embeddings.create(input=[text], model=EMBEDDING_MODEL)
-    return response.data[0].embedding
+    if Config.USE_OLLAMA:
+        response = client.embeddings(
+            model="nomic-embed-text", prompt=text  # Use Ollama embedding model
+        )
+        return response["embedding"]
+    else:
+        response = client.embeddings.create(
+            input=[text], model=Config.OPENAI_EMBEDDING_MODEL
+        )
+        return response.data[0].embedding
 
 
 # Helper function to print prompt and response
@@ -380,7 +450,6 @@ def guided_feedback_prompting_example():
 # targeted suggestions. It's particularly useful for obtaining more comprehensive, nuanced responses
 # and for directing the AI's focus to specific aspects of a complex topic.
 
-
 # Add these new functions to the existing code
 
 
@@ -578,7 +647,6 @@ def scenario_based_prompting_example():
 # The key is providing enough detail to make the scenario realistic while
 # keeping it focused on the learning objectives.
 
-
 # Verification examples
 
 
@@ -700,12 +768,13 @@ def join_list(items: List[str]) -> str:
 def generate_problem_solving_clarifications(
     questions: List[str] = None, answers: List[str] = None
 ) -> str:
+    """Generate prompts for problem solving with clarifications."""
     if questions is None:
         questions = []
     if answers is None:
         answers = []
 
-    prompt = f"""
+    return f"""
     Problem to solve: 
       - 2/5 of the students play soccer
       - half of the students play basketball
@@ -739,42 +808,31 @@ def generate_problem_solving_clarifications(
 
     Remember: Ask only ONE question at a time, focusing on the most critical issue first.
     """
-    
-    responses = []
 
-    prompt = generate_problem_solving_clarifications(None, None)
-    response = get_llm_response(prompt)
-    responses = [response]
-    print_prompt_and_response("Problem Solving", prompt, response)
 
-    prompt = generate_problem_solving_clarifications(responses, ["Maybe"])
-    response = get_llm_response(prompt)
-    responses.append(response)
-
-    print_prompt_and_response("Problem Solving", prompt, response)
+def run_all_examples():
+    """Run all prompting examples."""
+    basic_prompt_example()
+    structured_prompt_example()
+    chain_of_thought_example()
+    few_shot_example()
+    role_playing_example()
+    task_decomposition_example()
+    zero_shot_example()
+    self_consistency_example()
+    constrained_generation_example()
+    socratic_method_example()
+    reflective_prompting_example()
+    guided_feedback_prompting_example()
+    persona_based_prompting_example()
+    template_based_prompting_example()
+    comparative_analysis_prompting_example()
+    iterative_refinement_prompting_example()
+    scenario_based_prompting_example()
+    self_verification_prompting_example()
+    logical_verification_prompting_example()
 
 
 if __name__ == "__main__":
     client = initialize_openai_client()
-    basic_prompt_example()
-    # structured_prompt_example()
-    # chain_of_thought_example()
-    # few_shot_example()
-    # role_playing_example()
-    # task_decomposition_example()
-    # zero_shot_example()
-    # self_consistency_example()
-    # constrained_generation_example()
-    # socratic_method_example()
-    # reflective_prompting_example()
-    # guided_feedback_prompting_example()
-    # persona_based_prompting_example()
-    # template_based_prompting_example()
-    # comparative_analysis_prompting_example()
-    # iterative_refinement_prompting_example()
-    # scenario_based_prompting_example()
-    # self_verification_prompting_example()
-    # logical_verification_prompting_example()
-
-    # Example usage
-    generate_problem_solving_clarifications()
+    run_all_examples()
