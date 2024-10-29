@@ -4,8 +4,7 @@
 .cursorrules  
 ./checkpoints/
 ./logs/
-/lora_finetuned/
-/lora_finetuned_model/
+/lora*
 
 
 # Byte-compiled / optimized / DLL files

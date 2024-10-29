@@ -35,11 +35,13 @@ from dotenv import load_dotenv
 import os
 import csv
 from enum import Enum
+import random
+from datetime import datetime
 
 load_dotenv()
 
 # System Configuration Constants
-PROMPT_ONLY: bool = False  # Flag to only return prompts without LLM calls
+PROMPT_ONLY: bool = True  # Flag to only return prompts without LLM calls
 USE_OLLAMA: bool = True  # Toggle between Ollama and OpenAI
 OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
 OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
@@ -129,8 +131,11 @@ class RAGSystem:
     """
 
     def __init__(self):
-        """Initialize the RAG system."""
+        """Initialize the RAG system with simulated weather."""
         self.documents: List[Document] = []
+        # Simulate weather once at initialization
+        self.weather = get_simulated_weather()
+
         if not USE_OLLAMA:
             if api_key := os.getenv("OPENAI_API_KEY"):
                 self.client = OpenAI(api_key=api_key)
@@ -176,44 +181,74 @@ class RAGSystem:
         return [self.documents[i] for i in top_indices]
 
     def generate_response(self, query: str) -> Dict:
-        """Generate LLM response to query using retrieved context.
-
-        Implementation Details:
-        1. Retrieves top-k relevant documents using cosine similarity
-        2. Constructs prompt combining context and query
-        3. Applies custom system prompt for sales-oriented responses
-        4. Handles both Ollama and OpenAI response generation
-
-        Args:
-            query: User question to answer
-
-        Returns:
-            Dict containing:
-                answer (str): Generated LLM response
-                sources (List[Dict]): Metadata of documents used for context
-
-        Technical Notes:
-        - Uses temperature of 0.7 for response variety
-        - Limits response length to MAX_TOKENS
-        - Preserves source attribution
-        """
-        # Find relevant documents
+        """Enhanced response generation with weather and demo-specific context."""
+        weather = get_simulated_weather()
         relevant_docs = self.find_relevant_docs(query)
-
-        # Construct context from relevant documents
         context = "\n\n".join(doc.content for doc in relevant_docs)
 
-        # Construct the prompt
-        prompt = f"""Use the following information to answer the question. 
-        If the information doesn't contain the answer, say so.
-        
-        Information:
-        {context}
-        
-        Question: {query}
-        
-        Answer based only on the provided information. If uncertain, say so.
-        """
+        # Determine demo type for query
+        demo_type, _ = route_query(query, get_routing_embeddings())
+
+        # Base weather context that's useful for all demos
+        weather_context = f"""Current Weather:
+        Temperature: {int(weather.temperature)}°C
+        Conditions: {weather.conditions}
+        Humidity: {weather.humidity}%
+        Precipitation: {int(weather.precipitation)}mm"""
+
+        # Demo-specific prompts
+        prompt_templates = {
+            DemoType.COMBINED: f"""Use the following customer reviews and product information to answer the question.
+            Consider the current weather conditions when discussing comfort and satisfaction.
+            
+            {weather_context}
+            
+            Product Information and Reviews:
+            {context}
+            
+            Customer Question: {query}""",
+            DemoType.STYLE: f"""Provide style advice based on the following information.
+            Consider the current weather conditions when making style recommendations.
+            
+            {weather_context}
+            
+            Style Information:
+            {context}
+            
+            Style Question: {query}""",
+            DemoType.TECHNICAL: f"""Analyze the technical specifications and performance features.
+            Consider how current weather conditions might affect performance.
+            
+            {weather_context}
+            
+            Technical Specifications:
+            {context}
+            
+            Technical Question: {query}""",
+            DemoType.STORE: f"""Check store availability and inventory status.
+            Consider suggesting weather-appropriate alternatives if needed.
+            
+            {weather_context}
+            
+            Store Information:
+            {context}
+            
+            Availability Question: {query}""",
+            DemoType.NOT_ALLOWED: f"""This is a restricted topic. Generate a witty deflection.
+            Use the weather to change the subject if possible.
+            
+            {weather_context}
+            
+            Restricted Query: {query}""",
+        }
+
+        prompt = prompt_templates.get(demo_type)
+
+        if PROMPT_ONLY:
+            return {
+                "prompt": prompt,
+                "sources": [doc.metadata for doc in relevant_docs],
+            }
 
         # Generate response using selected model
         if USE_OLLAMA:
@@ -228,20 +263,6 @@ class RAGSystem:
                 ],
             )
             answer = response["message"]["content"]
-        else:
-            response = client.chat.completions.create(
-                model=OPENAI_CHAT_MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a sneaky sales person that answers questions based on provided information and makes sarcastic jokes. Always sell the product or other product that are more expensive. Make me loads of money!",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=MAX_TOKENS,
-                temperature=TEMPERATURE,
-            )
-            answer = response.choices[0].message.content
 
         return {"answer": answer, "sources": [doc.metadata for doc in relevant_docs]}
 
@@ -479,7 +500,10 @@ def demo_combined_rag(rag: RAGSystem, query: str = None) -> None:
         - Source attribution with product models and review metrics
     """
     result = rag.generate_response(query)
-    print("\nAnswer:", result["answer"])
+    if PROMPT_ONLY:
+        print("\nPrompt:", result["prompt"])
+    else:
+        print("\nAnswer:", result["answer"])
     print("\nSources:")
     for source in result["sources"]:
         print(
@@ -507,7 +531,10 @@ def demo_style_rag(rag: RAGSystem, query: str = None) -> None:
         - Source attribution with relevant style occasions
     """
     result = rag.generate_response(query)
-    print("\nAnswer:", result["answer"])
+    if PROMPT_ONLY:
+        print("\nPrompt:", result["prompt"])
+    else:
+        print("\nAnswer:", result["answer"])
     print("\nSources:")
     for source in result["sources"]:
         print(
@@ -535,7 +562,10 @@ def demo_tech_rag(rag: RAGSystem, query: str = None) -> None:
         - Source attribution with key performance metrics
     """
     result = rag.generate_response(query)
-    print("\nAnswer:", result["answer"])
+    if PROMPT_ONLY:
+        print("\nPrompt:", result["prompt"])
+    else:
+        print("\nAnswer:", result["answer"])
     print("\nSources:")
     for source in result["sources"]:
         specs = source["tech_specs"]
@@ -564,7 +594,10 @@ def demo_store_availability_rag(rag: RAGSystem, query: str = None) -> None:
         - Source attribution with store locations and stock counts
     """
     result = rag.generate_response(query)
-    print("\nAnswer:", result["answer"])
+    if PROMPT_ONLY:
+        print("\nPrompt:", result["prompt"])
+    else:
+        print("\nAnswer:", result["answer"])
     print("\nSources:")
     for source in result["sources"]:
         stores = source["available_stores"]
@@ -597,7 +630,38 @@ def demo_not_allowed(rag: RAGSystem, query: str = None) -> None:
     result = rag.generate_response(
         f"This is not allowed, please respond with a sarcastic sneer about it:\n{query}"
     )
-    print("\nAnswer:", result["answer"])
+    if PROMPT_ONLY:
+        print("\nPrompt:", result["prompt"])
+    else:
+        print("\nAnswer:", result["answer"])
+
+
+@dataclass
+class WeatherData:
+    """Simulated weather data for shoe recommendations."""
+
+    temperature: float  # in Celsius
+    conditions: str  # e.g., "sunny", "rainy", "snowy"
+    humidity: int  # percentage
+    precipitation: float  # mm of rain/snow
+
+
+def get_simulated_weather(location: str = "Eindhoven") -> WeatherData:
+    """Simulate weather API response for a given location.
+
+    Args:
+        location: City name to get weather for
+
+    Returns:
+        WeatherData object with simulated conditions
+    """
+    conditions = random.choice(["sunny", "rainy", "cloudy", "snowy"])
+    return WeatherData(
+        temperature=random.uniform(5, 25),
+        conditions=conditions,
+        humidity=random.randint(30, 90),
+        precipitation=random.uniform(0, 10) if conditions in ["rainy", "snowy"] else 0,
+    )
 
 
 if __name__ == "__main__":
@@ -618,6 +682,7 @@ if __name__ == "__main__":
     ]
 
     for query in test_queries:
+        print("\n--------------------------------")
         print(f"\nRouting query: {query}")
         demo_type, confidence = route_query(query, demo_embeddings)
         print(f"Selected demo: {demo_type.value} (confidence: {confidence:.3f})")

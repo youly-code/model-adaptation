@@ -19,20 +19,16 @@ dotenv.load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 
-def prepare_fine_tuning():
-    """Setup and prepare model for LoRA fine-tuning"""
+def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
+    """Initialize and configure the tokenizer with proper padding tokens.
 
-    # Update the model name to the correct format
-    model_name = "unsloth/Llama-3.2-1B"
-    hf_token = HF_TOKEN
+    Args:
+        model_name: Name of the model to load tokenizer for
+        hf_token: Hugging Face API token
 
-    if not hf_token:
-        raise ValueError(
-            "Please set the HF_TOKEN environment variable with your Hugging Face token. "
-            "You can get it from https://huggingface.co/settings/tokens"
-        )
-
-    # Use AutoTokenizer instead of LlamaTokenizer
+    Returns:
+        AutoTokenizer: Configured tokenizer instance
+    """
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
         padding_side="right",
@@ -46,94 +42,101 @@ def prepare_fine_tuning():
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # Use LlamaForCausalLM directly
-    model = LlamaForCausalLM.from_pretrained(
-        model_name, device_map="auto", token=hf_token
+    return tokenizer
+
+
+def prepare_fine_tuning():
+    """Setup and prepare model for LoRA fine-tuning"""
+    model_name = "unsloth/Llama-3.2-1B"  # Or another compatible model
+
+    if not HF_TOKEN:
+        raise ValueError("Please set the HF_TOKEN environment variable")
+
+    # Standard initialization instead of Unsloth
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, token=HF_TOKEN, device_map="auto", torch_dtype=torch.float16
     )
+
+    tokenizer = initialize_tokenizer(model_name, HF_TOKEN)
 
     # Configure LoRA
     lora_config = LoraConfig(
-        r=16,  # Rank of update matrices
-        lora_alpha=32,  # Alpha scaling factor
-        target_modules=["q_proj", "v_proj"],  # Which modules to apply LoRA to
-        lora_dropout=0.05,  # Dropout probability
-        bias="none",  # Don't train bias parameters
-        task_type="CAUSAL_LM",  # Task type for causality
+        r=16,
+        lora_alpha=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        lora_dropout=0.05,
+        bias="none",
     )
 
-    # Create PEFT model
     model = get_peft_model(model, lora_config)
-
     return model, tokenizer
 
 
 def prepare_dataset(tokenizer):
     """Prepare dataset for fine-tuning"""
 
+    def tokenize_function(examples):
+        """Tokenize the text examples"""
+        return tokenizer(
+            examples["text"],
+            truncation=True,
+            max_length=512,
+            padding="max_length",
+            return_tensors=None,
+        )
+
     print("Loading dataset...")
     dataset = load_dataset("csv", data_files="src/data/ai_ethics_jokes_training.csv")
 
+    # Keep only necessary columns
+    dataset = dataset["train"].remove_columns(
+        ["timestamp", "difficulty", "type", "context"]
+    )
+
     def format_prompt(example):
-        """Format each example into instruction-following format"""
+        """Format each example into Llama instruction format"""
         return {
-            "text": f"Instruction: {example['instruction']}\n"
-            f"Input: {example['input']}\n"
-            f"Output: {example['output']}\n"
-            f"Context: {example['context']}\n"
-            f"Type: {example['type']}\n"
-            f"Difficulty: {example['difficulty']}"
+            "text": f"[INST] {example['instruction']}\n{example['input']} [/INST] {example['output']}"
         }
 
     print("Formatting prompts...")
-    formatted_dataset = dataset.map(
-        format_prompt,
-        desc="Formatting prompts"  # Removed the disable parameter
-    )
-
-    def tokenize_function(examples):
-        return tokenizer(
-            examples["text"], padding="max_length", truncation=True, max_length=512
-        )
+    formatted_dataset = dataset.map(format_prompt)
 
     print("Tokenizing dataset...")
     tokenized_dataset = formatted_dataset.map(
         tokenize_function,
         batched=True,
         desc="Tokenizing",
-        remove_columns=formatted_dataset["train"].column_names,
+        remove_columns=formatted_dataset.column_names,
     )
 
     return tokenized_dataset
 
 
 def train_model(model, tokenizer, dataset):
-    """Train the model using LoRA"""
-
-    # Check if GPU is available
-    use_fp16 = torch.cuda.is_available()  # Only use fp16 if CUDA GPU is available
-
+    """Train the model using standard training"""
     training_args = TrainingArguments(
-        output_dir="./lora_finetuned",
-        num_train_epochs=3,
-        per_device_train_batch_size=4,
-        gradient_accumulation_steps=4,
-        save_steps=100,
-        logging_steps=100,
-        learning_rate=2e-4,
-        weight_decay=0.01,
-        fp16=use_fp16,  # Dynamically set based on GPU availability
-        push_to_hub=False,
+        output_dir="./lora_finetuned",           # Directory where model checkpoints will be saved
+        num_train_epochs=1,                      # Number of complete passes through the dataset
+        per_device_train_batch_size=2,           # Number of samples processed on each device per batch
+        gradient_accumulation_steps=4,           # Number of batches to accumulate before performing a backward/update pass
+        save_steps=100,                          # Save checkpoint every X steps
+        logging_steps=25,                        # Log training metrics every X steps
+        learning_rate=2e-4,                      # Initial learning rate for training
+        weight_decay=0.1,                        # L2 regularization factor to prevent overfitting
+        fp16=False,                              # Whether to use 16-bit floating point precision
+        optim="adamw_torch",                     # Optimizer type (AdamW is standard for transformer models)
+        lr_scheduler_type="cosine_with_restarts" # Learning rate schedule - gradually decreases LR with periodic restarts
     )
 
     # Initialize trainer with progress bar
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=dataset["train"],
+        train_dataset=dataset,
         data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
     )
 
-    # Train with progress bar
     print("Starting training...")
     trainer.train()
 
@@ -142,6 +145,8 @@ def train_model(model, tokenizer, dataset):
 
 def inference_example(model, tokenizer, prompt):
     """Generate text using fine-tuned model"""
+    # Convert model to inference mode
+    model = LanguageModel.for_inference(model)
 
     # Ensure inputs are on the correct device
     device = model.device
@@ -149,8 +154,8 @@ def inference_example(model, tokenizer, prompt):
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
     # Add attention mask if not present
-    if 'attention_mask' not in inputs:
-        inputs['attention_mask'] = torch.ones_like(inputs['input_ids'])
+    if "attention_mask" not in inputs:
+        inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
 
     outputs = model.generate(
         **inputs,
@@ -165,19 +170,28 @@ def inference_example(model, tokenizer, prompt):
 
 # Usage example
 if __name__ == "__main__":
-    # Setup
-    model, tokenizer = prepare_fine_tuning()
+    FINETUNING = True
 
-    # Prepare dataset
-    dataset = prepare_dataset(tokenizer)
+    if FINETUNING:
+        # Setup
+        model, tokenizer = prepare_fine_tuning()
 
-    # Train
-    trainer = train_model(model, tokenizer, dataset)
+        # Prepare dataset
+        dataset = prepare_dataset(tokenizer)
 
-    # Save
-    model.save_pretrained("./lora_finetuned_model")
+        # Train
+        trainer = train_model(model, tokenizer, dataset)
 
-    # Example inference
-    prompt = "Instruction: Generate a lighthearted joke about AI ethics\nInput: Topic: AI bias\nContext: Professional setting\nType: Humor\nDifficulty: Medium"
-    response = inference_example(model, tokenizer, prompt)
-    print(response)
+        # Save
+        model.save_pretrained("./lora_finetuned")
+        tokenizer.save_pretrained("./lora_finetuned")
+
+    else:
+        # Load
+        tokenizer = AutoTokenizer.from_pretrained("./lora_finetuned")
+        model = AutoModelForCausalLM.from_pretrained("./lora_finetuned")
+
+        # Example inference
+        prompt = "Instruction: Generate a lighthearted joke about AI ethics and bias in a Professional setting"
+        response = inference_example(model, tokenizer, prompt)
+        print(response)
