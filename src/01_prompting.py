@@ -4,7 +4,7 @@ from typing import List
 import json
 import os
 from dotenv import load_dotenv
-import ollama  # Import Ollama for local LLM integration
+import ollama
 
 load_dotenv()
 
@@ -17,13 +17,11 @@ class Config:
     USE_OLLAMA: bool = True
 
     # OpenAI Settings
-    OPENAI_CHAT_MODEL: str = "gpt-4o-mini"  # or "gpt-3.5-turbo" for lower cost
+    OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
 
     # Ollama Settings
-    OLLAMA_CHAT_MODEL: str = (
-        "llama3.2:latest"  # Ensure this model is correct and accessible
-    )
+    OLLAMA_CHAT_MODEL: str = "llama3.2:latest"
     OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
 
     # Generation Settings
@@ -35,16 +33,17 @@ class Config:
 
 
 # Validate OpenAI API key if not using Ollama
-if not Config.USE_OLLAMA and not Config.OPENAI_API_KEY:
+if Config.USE_OLLAMA or Config.OPENAI_API_KEY:
+    # Initialize clients
+    client = (
+        ollama.Client()
+        if Config.USE_OLLAMA
+        else OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    )
+else:
     raise ValueError(
         "OPENAI_API_KEY environment variable is required when USE_OLLAMA=False"
     )
-
-# Initialize clients
-if Config.USE_OLLAMA:
-    client = ollama.Client()
-else:
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def initialize_openai_client() -> OpenAI:
