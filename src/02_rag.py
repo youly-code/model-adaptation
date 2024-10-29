@@ -37,21 +37,49 @@ import csv
 from enum import Enum
 import random
 from datetime import datetime
+import logging
+from pydantic import BaseModel, Field
+from functools import lru_cache
 
 load_dotenv()
 
-# System Configuration Constants
-PROMPT_ONLY: bool = True  # Flag to only return prompts without LLM calls
-USE_OLLAMA: bool = True  # Toggle between Ollama and OpenAI
-OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
-OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
-OLLAMA_CHAT_MODEL: str = "llama3.2:latest"
-OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
-MAX_TOKENS: int = 2000  # Maximum tokens in LLM response
-TEMPERATURE: float = 0.7  # Controls randomness in LLM responses
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Config:
+    """Configuration settings for the RAG system."""
+
+    PROMPT_ONLY: bool = True
+    USE_OLLAMA: bool = True
+
+    # OpenAI Settings
+    OPENAI_CHAT_MODEL: str = "gpt-4-turbo-preview"  # or "gpt-3.5-turbo" for lower cost
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+
+    # Ollama Settings
+    OLLAMA_CHAT_MODEL: str = "llama3.2:latest"  # or your preferred model
+    OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
+
+    # Generation Settings
+    MAX_TOKENS: int = 2000
+    TEMPERATURE: float = 0.7
+
+    # API Keys (consider moving to environment variables)
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+
+
+# Validate OpenAI API key if not using Ollama
+if not Config.USE_OLLAMA and not Config.OPENAI_API_KEY:
+    logger.error("OPENAI_API_KEY not set in environment variables")
+    raise ValueError(
+        "OPENAI_API_KEY environment variable is required when USE_OLLAMA=False"
+    )
 
 # Initialize clients
-if USE_OLLAMA:
+if Config.USE_OLLAMA:
     client = ollama.Client()
 else:
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -72,24 +100,38 @@ class Document:
     embedding: Optional[List[float]] = None
 
 
+@lru_cache(maxsize=1000)
 def get_embedding(text: str) -> List[float]:
-    """Generate embedding vector for input text using configured model.
+    """Generate cached embedding vector for input text using configured model.
 
     Args:
-        text: Input text to generate embedding for.
+        text: Input text to generate embedding for
 
     Returns:
-        List of floats representing the text embedding vector.
+        List[float]: The embedding vector
 
     Raises:
-        RuntimeError: If embedding generation fails.
+        EmbeddingError: If embedding generation fails
+        ValueError: If text is empty
     """
-    if USE_OLLAMA:
-        response = ollama.embeddings(model=OLLAMA_EMBEDDING_MODEL, prompt=text)
-        return response["embedding"]
-    else:
-        response = client.embeddings.create(input=[text], model=OPENAI_EMBEDDING_MODEL)
-        return response.data[0].embedding
+    if not text.strip():
+        raise ValueError("Empty text cannot be embedded")
+
+    try:
+        if Config.USE_OLLAMA:
+            response = ollama.embeddings(
+                model=Config.OLLAMA_EMBEDDING_MODEL, prompt=text
+            )
+            return response["embedding"]
+        else:
+            response = client.embeddings.create(
+                input=[text], model=Config.OPENAI_EMBEDDING_MODEL
+            )
+            return response.data[0].embedding
+
+    except Exception as e:
+        logger.error(f"Failed to generate embedding: {str(e)}")
+        raise EmbeddingError(f"Embedding generation failed: {str(e)}")
 
 
 def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
@@ -105,6 +147,18 @@ def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
     norm1 = np.linalg.norm(vec1)
     norm2 = np.linalg.norm(vec2)
     return np.dot(vec1, vec2) / (norm1 * norm2)
+
+
+class DocumentInput(BaseModel):
+    """Validates document input data.
+
+    Attributes:
+        content: The raw text content of the document
+        metadata: Optional dictionary containing document metadata
+    """
+
+    content: str = Field(..., min_length=1, description="Document content text")
+    metadata: Dict = Field(default_factory=dict, description="Document metadata")
 
 
 class RAGSystem:
@@ -136,27 +190,18 @@ class RAGSystem:
         # Simulate weather once at initialization
         self.weather = get_simulated_weather()
 
-        if not USE_OLLAMA:
+        if not Config.USE_OLLAMA:
             if api_key := os.getenv("OPENAI_API_KEY"):
                 self.client = OpenAI(api_key=api_key)
             else:
                 raise ValueError("OPENAI_API_KEY environment variable not set")
 
-    def add_document(self, content: str, metadata: Dict = None) -> None:
-        """Add a document to the RAG system's knowledge base.
-
-        Args:
-            content: Raw text content of the document.
-            metadata: Optional dictionary of document metadata.
-        """
-        if metadata is None:
-            metadata = {}
-
-        # Get embedding for the document
-        embedding = get_embedding(content)
-
-        # Store document with its embedding
-        doc = Document(content=content, metadata=metadata, embedding=embedding)
+    def add_document(self, doc_input: DocumentInput) -> None:
+        """Add validated document to the RAG system."""
+        embedding = get_embedding(doc_input.content)
+        doc = Document(
+            content=doc_input.content, metadata=doc_input.metadata, embedding=embedding
+        )
         self.documents.append(doc)
 
     def find_relevant_docs(self, query: str, top_k: int = 3) -> List[Document]:
@@ -244,27 +289,48 @@ class RAGSystem:
 
         prompt = prompt_templates.get(demo_type)
 
-        if PROMPT_ONLY:
+        if Config.PROMPT_ONLY:
             return {
                 "prompt": prompt,
                 "sources": [doc.metadata for doc in relevant_docs],
             }
 
-        # Generate response using selected model
-        if USE_OLLAMA:
-            response = ollama.chat(
-                model=OLLAMA_CHAT_MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a sneaky sales person that answers questions based on provided information and makes sarcastic jokes. Always sell the product or other product that are more expensive. Make me loads of money!",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-            )
-            answer = response["message"]["content"]
+        try:
+            if Config.USE_OLLAMA:
+                response = ollama.chat(
+                    model=Config.OLLAMA_CHAT_MODEL,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a sneaky sales person that answers questions based on provided information and makes sarcastic jokes. Always sell the product or other product that are more expensive. Make me loads of money!",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+                answer = response["message"]["content"]
+            else:
+                response = self.client.chat.completions.create(
+                    model=Config.OPENAI_CHAT_MODEL,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a sneaky sales person that answers questions based on provided information and makes sarcastic jokes. Always sell the product or other product that are more expensive. Make me loads of money!",
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    max_tokens=Config.MAX_TOKENS,
+                    temperature=Config.TEMPERATURE,
+                )
+                answer = response.choices[0].message.content
 
-        return {"answer": answer, "sources": [doc.metadata for doc in relevant_docs]}
+            return {
+                "answer": answer,
+                "sources": [doc.metadata for doc in relevant_docs],
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to generate response: {str(e)}")
+            raise RAGException(f"Response generation failed: {str(e)}") from e
 
 
 class DemoType(Enum):
@@ -277,7 +343,7 @@ class DemoType(Enum):
     NOT_ALLOWED = "not_allowed"  # Anything that is rude, offensive, or inappropriate
 
 
-def get_routing_embeddings() -> Dict[DemoType, List[float]]:
+def get_routing_embeddings() -> Dict[DemoType, List[np.ndarray]]:
     """Generate embeddings for each demo type's description."""
     demo_descriptions = {
         DemoType.COMBINED: """Customer reviews, satisfaction ratings, 
@@ -301,7 +367,7 @@ def get_routing_embeddings() -> Dict[DemoType, List[float]]:
 
 
 def route_query(
-    query: str, demo_embeddings: Dict[DemoType, List[float]]
+    query: str, demo_embeddings: Dict[DemoType, List[np.ndarray]]
 ) -> Tuple[DemoType, float]:
     """Route query to most appropriate demo type using semantic similarity.
 
@@ -369,6 +435,10 @@ def initialize_rag_system() -> RAGSystem:
     - Implements efficient data joining
     - Handles data validation
     - Preserves relationships between data sources
+
+    Raises:
+        FileNotFoundError: If required CSV files are not found
+        ValueError: If data format is invalid
     """
     rag = RAGSystem()
 
@@ -475,7 +545,8 @@ def initialize_rag_system() -> RAGSystem:
             ],
         }
 
-        rag.add_document(content, metadata)
+        doc_input = DocumentInput(content=content, metadata=metadata)
+        rag.add_document(doc_input)
 
     return rag
 
@@ -500,7 +571,7 @@ def demo_combined_rag(rag: RAGSystem, query: str = None) -> None:
         - Source attribution with product models and review metrics
     """
     result = rag.generate_response(query)
-    if PROMPT_ONLY:
+    if Config.PROMPT_ONLY:
         print("\nPrompt:", result["prompt"])
     else:
         print("\nAnswer:", result["answer"])
@@ -531,7 +602,7 @@ def demo_style_rag(rag: RAGSystem, query: str = None) -> None:
         - Source attribution with relevant style occasions
     """
     result = rag.generate_response(query)
-    if PROMPT_ONLY:
+    if Config.PROMPT_ONLY:
         print("\nPrompt:", result["prompt"])
     else:
         print("\nAnswer:", result["answer"])
@@ -562,7 +633,7 @@ def demo_tech_rag(rag: RAGSystem, query: str = None) -> None:
         - Source attribution with key performance metrics
     """
     result = rag.generate_response(query)
-    if PROMPT_ONLY:
+    if Config.PROMPT_ONLY:
         print("\nPrompt:", result["prompt"])
     else:
         print("\nAnswer:", result["answer"])
@@ -594,7 +665,7 @@ def demo_store_availability_rag(rag: RAGSystem, query: str = None) -> None:
         - Source attribution with store locations and stock counts
     """
     result = rag.generate_response(query)
-    if PROMPT_ONLY:
+    if Config.PROMPT_ONLY:
         print("\nPrompt:", result["prompt"])
     else:
         print("\nAnswer:", result["answer"])
@@ -630,7 +701,7 @@ def demo_not_allowed(rag: RAGSystem, query: str = None) -> None:
     result = rag.generate_response(
         f"This is not allowed, please respond with a sarcastic sneer about it:\n{query}"
     )
-    if PROMPT_ONLY:
+    if Config.PROMPT_ONLY:
         print("\nPrompt:", result["prompt"])
     else:
         print("\nAnswer:", result["answer"])
@@ -662,6 +733,24 @@ def get_simulated_weather(location: str = "Eindhoven") -> WeatherData:
         humidity=random.randint(30, 90),
         precipitation=random.uniform(0, 10) if conditions in ["rainy", "snowy"] else 0,
     )
+
+
+class RAGException(Exception):
+    """Base exception for RAG system errors."""
+
+    pass
+
+
+class EmbeddingError(RAGException):
+    """Raised when embedding generation fails."""
+
+    pass
+
+
+class DocumentProcessingError(RAGException):
+    """Raised when document processing fails."""
+
+    pass
 
 
 if __name__ == "__main__":
