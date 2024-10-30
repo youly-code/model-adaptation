@@ -19,7 +19,7 @@ dotenv.load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 # Add at the top of the file, after imports
-os.environ["TOKENIZERS_PARALLELISM"] = "true"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
@@ -51,29 +51,29 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
 def prepare_fine_tuning():
     """Setup and prepare model for LoRA fine-tuning"""
     model_name = "unsloth/Llama-3.2-1B"
-    
+
     model_kwargs = {
         "token": HF_TOKEN,
-        "torch_dtype": torch.float32,
+        "torch_dtype": torch.float16,
         "low_cpu_mem_usage": True,
     }
 
     try:
         device = "mps" if torch.backends.mps.is_available() else "cpu"
-        
+
         # Load model without device_map first
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             **model_kwargs,
             use_cache=False,
         )
-        
+
         # Move model to device after loading
         model = model.to(device)
-        
+
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
-        
+
     except Exception as e:
         raise RuntimeError(f"Failed to initialize model: {str(e)}") from e
 
@@ -134,7 +134,16 @@ def prepare_dataset(tokenizer):
 
 
 def train_model(model, tokenizer, dataset):
-    """Train the model using optimized training parameters"""
+    """Train the model using optimized training parameters
+
+    Key training parameters:
+    - batch_size=2 with gradient_accumulation=4: Provides effective batch size of 8
+      while staying within memory constraints
+    - learning_rate=2e-4: Empirically optimal for LoRA fine-tuning
+    - weight_decay=0.01: Prevents overfitting while allowing adaptation
+    - gradient_checkpointing=True: Reduces memory usage during training
+    - warmup_ratio=0.1: Helps stabilize early training
+    """
     training_args = TrainingArguments(
         output_dir="./lora_finetuned",
         num_train_epochs=1,
@@ -173,7 +182,9 @@ def inference_example(model, tokenizer, prompt: str) -> str:
         formatted_prompt = f"[INST] {prompt} [/INST]"
         device = model.device
         inputs = tokenizer(formatted_prompt, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}  # Ensure inputs are on same device as model
+        inputs = {
+            k: v.to(device) for k, v in inputs.items()
+        }  # Ensure inputs are on same device as model
 
         outputs = model.generate(
             **inputs,
