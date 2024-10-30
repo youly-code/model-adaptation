@@ -24,4 +24,8 @@ tiktoken
 tqdm
 blobfile
 sentencepiece
+pydantic-settings
+huggingface-hub
+nltk
+textblob
 
