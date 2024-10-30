@@ -18,6 +18,9 @@ dotenv.load_dotenv()
 
 HF_TOKEN = os.getenv("HF_TOKEN")
 
+# Add at the top of the file, after imports
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
     """Initialize and configure the tokenizer with proper padding tokens.
@@ -46,42 +49,44 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
 
 
 def prepare_fine_tuning():
-    """Setup and prepare model for LoRA fine-tuning
-    
-    Returns:
-        tuple: (model, tokenizer) pair configured for training
-        
-    Raises:
-        ValueError: If HF_TOKEN is not set
-        RuntimeError: If CUDA/MPS device initialization fails
-    """
+    """Setup and prepare model for LoRA fine-tuning"""
     model_name = "unsloth/Llama-3.2-1B"
 
-    if not HF_TOKEN:
-        raise ValueError("Please set the HF_TOKEN environment variable")
+    model_kwargs = {
+        "token": HF_TOKEN,
+        "torch_dtype": torch.float16,
+        "low_cpu_mem_usage": True,
+    }
 
     try:
-        # Determine optimal device
-        device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-        
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+
+        # Load model without device_map first
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, 
-            token=HF_TOKEN,
-            device_map=device,
-            torch_dtype=torch.float16
+            model_name,
+            **model_kwargs,
+            use_cache=False,
         )
+
+        # Move model to device after loading
+        model = model.to(device)
+
+        model.gradient_checkpointing_enable()
+        model.enable_input_require_grads()
+
     except Exception as e:
-        raise RuntimeError(f"Failed to initialize model: {str(e)}")
+        raise RuntimeError(f"Failed to initialize model: {str(e)}") from e
 
     tokenizer = initialize_tokenizer(model_name, HF_TOKEN)
 
     # Configure LoRA
     lora_config = LoraConfig(
-        r=16,
+        r=8,
         lora_alpha=16,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        target_modules=["q_proj", "v_proj"],
         lora_dropout=0.05,
         bias="none",
+        task_type="CAUSAL_LM",
     )
 
     model = get_peft_model(model, lora_config)
@@ -105,20 +110,13 @@ def prepare_dataset(tokenizer):
         }
 
     def tokenize_function(examples):
-        """Tokenize the formatted examples
-        
-        Args:
-            examples: Batch of examples to tokenize
-            
-        Returns:
-            dict: Tokenized examples
-        """
+        """Tokenize the formatted examples"""
         return tokenizer(
             examples["text"],
             truncation=True,
-            max_length=512,
+            max_length=512,  # Increased back to 512
             padding="max_length",
-            return_tensors="pt"
+            return_tensors="pt",
         )
 
     print("Formatting prompts...")
@@ -136,37 +134,35 @@ def prepare_dataset(tokenizer):
 
 
 def train_model(model, tokenizer, dataset):
-    """Train the model using standard training
-    
-    Training parameters optimized for M3 architecture:
-    - batch_size=2: Balanced for memory constraints
-    - gradient_accumulation=4: Effective batch size of 8
-    - learning_rate=2e-4: Empirically optimal for LoRA
-    - weight_decay=0.1: Prevents overfitting on small datasets
-    
-    Args:
-        model: Model to train
-        tokenizer: Tokenizer instance
-        dataset: Processed dataset
-        
-    Returns:
-        Trainer: Trained model trainer instance
+    """Train the model using optimized training parameters
+
+    Key training parameters:
+    - batch_size=2 with gradient_accumulation=4: Provides effective batch size of 8
+      while staying within memory constraints
+    - learning_rate=2e-4: Empirically optimal for LoRA fine-tuning
+    - weight_decay=0.01: Prevents overfitting while allowing adaptation
+    - gradient_checkpointing=True: Reduces memory usage during training
+    - warmup_ratio=0.1: Helps stabilize early training
     """
     training_args = TrainingArguments(
-        output_dir="./lora_finetuned",           # Directory where model checkpoints will be saved
-        num_train_epochs=1,                      # Number of complete passes through the dataset
-        per_device_train_batch_size=2,           # Number of samples processed on each device per batch
-        gradient_accumulation_steps=4,           # Number of batches to accumulate before performing a backward/update pass
-        save_steps=100,                          # Save checkpoint every X steps
-        logging_steps=25,                        # Log training metrics every X steps
-        learning_rate=2e-4,                      # Initial learning rate for training
-        weight_decay=0.1,                        # L2 regularization factor to prevent overfitting
-        fp16=False,                              # Whether to use 16-bit floating point precision
-        optim="adamw_torch",                     # Optimizer type (AdamW is standard for transformer models)
-        lr_scheduler_type="cosine_with_restarts" # Learning rate schedule - gradually decreases LR with periodic restarts
+        output_dir="./lora_finetuned",
+        num_train_epochs=1,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        save_steps=100,
+        logging_steps=20,
+        learning_rate=2e-4,
+        weight_decay=0.01,
+        optim="adamw_torch",
+        lr_scheduler_type="cosine",
+        warmup_ratio=0.1,
+        gradient_checkpointing=True,
+        dataloader_num_workers=0,
+        group_by_length=True,
+        report_to="none",
+        save_total_limit=2,
     )
 
-    # Initialize trainer with progress bar
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -181,24 +177,14 @@ def train_model(model, tokenizer, dataset):
 
 
 def inference_example(model, tokenizer, prompt: str) -> str:
-    """Generate text using fine-tuned model
-    
-    Args:
-        model: Fine-tuned model
-        tokenizer: Associated tokenizer
-        prompt: Input prompt text
-        
-    Returns:
-        str: Generated response text
-        
-    Raises:
-        RuntimeError: If generation fails
-    """
+    """Generate text using fine-tuned model"""
     try:
         formatted_prompt = f"[INST] {prompt} [/INST]"
         device = model.device
         inputs = tokenizer(formatted_prompt, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+        inputs = {
+            k: v.to(device) for k, v in inputs.items()
+        }  # Ensure inputs are on same device as model
 
         outputs = model.generate(
             **inputs,
@@ -207,10 +193,10 @@ def inference_example(model, tokenizer, prompt: str) -> str:
             do_sample=True,
             num_return_sequences=1,
         )
-        
+
         return tokenizer.decode(outputs[0], skip_special_tokens=True)
     except Exception as e:
-        raise RuntimeError(f"Generation failed: {str(e)}")
+        raise RuntimeError(f"Generation failed: {str(e)}") from e
 
 
 # Usage example
@@ -233,9 +219,6 @@ if __name__ == "__main__":
 
         # Example inference after training
         prompt = "Write a frustrated complaint about poor customer service"
-        response = inference_example(model, tokenizer, prompt)
-        print(response)
-
     else:
         # Load
         tokenizer = AutoTokenizer.from_pretrained("./lora_finetuned")
@@ -243,5 +226,6 @@ if __name__ == "__main__":
 
         # Example inference
         prompt = "Instruction: Generate a lighthearted joke about AI ethics and bias in a Professional setting"
-        response = inference_example(model, tokenizer, prompt)
-        print(response)
+
+    response = inference_example(model, tokenizer, prompt)
+    print(response)
