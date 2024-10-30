@@ -527,7 +527,7 @@ def save_synthetic_data(
 async def main():
     # Generate a larger initial dataset
     all_synthetic_data = []
-    for _ in range(100):  # Generate 10 batches
+    for _ in range(500):  # Generate 10 batches
         batch_data = await generate_synthetic_data(n_samples=10)  # 10 samples per batch
         all_synthetic_data.extend(batch_data)
         print(f"Generated batch with {len(batch_data)} samples")
