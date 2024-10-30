@@ -46,16 +46,32 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
 
 
 def prepare_fine_tuning():
-    """Setup and prepare model for LoRA fine-tuning"""
-    model_name = "unsloth/Llama-3.2-1B"  # Or another compatible model
+    """Setup and prepare model for LoRA fine-tuning
+    
+    Returns:
+        tuple: (model, tokenizer) pair configured for training
+        
+    Raises:
+        ValueError: If HF_TOKEN is not set
+        RuntimeError: If CUDA/MPS device initialization fails
+    """
+    model_name = "unsloth/Llama-3.2-1B"
 
     if not HF_TOKEN:
         raise ValueError("Please set the HF_TOKEN environment variable")
 
-    # Standard initialization instead of Unsloth
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, token=HF_TOKEN, device_map="auto", torch_dtype=torch.float16
-    )
+    try:
+        # Determine optimal device
+        device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+        
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, 
+            token=HF_TOKEN,
+            device_map=device,
+            torch_dtype=torch.float16
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize model: {str(e)}")
 
     tokenizer = initialize_tokenizer(model_name, HF_TOKEN)
 
@@ -74,19 +90,11 @@ def prepare_fine_tuning():
 
 def prepare_dataset(tokenizer):
     """Prepare dataset for fine-tuning"""
-    def tokenize_function(examples):
-        """Tokenize the text examples"""
-        return tokenizer(
-            examples["text"],
-            truncation=True,
-            max_length=512,
-            padding="max_length",
-            return_tensors=None,
-        )
+    try:
+        dataset = load_dataset("leonvanbokhorst/synthetic-complaints")
+    except Exception as e:
+        raise RuntimeError(f"Failed to load dataset: {str(e)}")
 
-    print("Loading dataset...")
-    dataset = load_dataset("leonvanbokhorst/synthetic-complaints")
-    
     print("Dataset structure:", dataset["train"].features)
     print("First example:", dataset["train"][0])
 
@@ -95,6 +103,23 @@ def prepare_dataset(tokenizer):
         return {
             "text": f"[INST] {example['instruction']} [/INST] {example['response']}"
         }
+
+    def tokenize_function(examples):
+        """Tokenize the formatted examples
+        
+        Args:
+            examples: Batch of examples to tokenize
+            
+        Returns:
+            dict: Tokenized examples
+        """
+        return tokenizer(
+            examples["text"],
+            truncation=True,
+            max_length=512,
+            padding="max_length",
+            return_tensors="pt"
+        )
 
     print("Formatting prompts...")
     formatted_dataset = dataset["train"].map(format_prompt)
@@ -111,7 +136,22 @@ def prepare_dataset(tokenizer):
 
 
 def train_model(model, tokenizer, dataset):
-    """Train the model using standard training"""
+    """Train the model using standard training
+    
+    Training parameters optimized for M3 architecture:
+    - batch_size=2: Balanced for memory constraints
+    - gradient_accumulation=4: Effective batch size of 8
+    - learning_rate=2e-4: Empirically optimal for LoRA
+    - weight_decay=0.1: Prevents overfitting on small datasets
+    
+    Args:
+        model: Model to train
+        tokenizer: Tokenizer instance
+        dataset: Processed dataset
+        
+    Returns:
+        Trainer: Trained model trainer instance
+    """
     training_args = TrainingArguments(
         output_dir="./lora_finetuned",           # Directory where model checkpoints will be saved
         num_train_epochs=1,                      # Number of complete passes through the dataset
@@ -140,25 +180,37 @@ def train_model(model, tokenizer, dataset):
     return trainer
 
 
-def inference_example(model, tokenizer, prompt):
-    """Generate text using fine-tuned model"""
-    # Format the prompt properly
-    formatted_prompt = f"[INST] {prompt} [/INST]"
+def inference_example(model, tokenizer, prompt: str) -> str:
+    """Generate text using fine-tuned model
     
-    # Ensure inputs are on the correct device
-    device = model.device
-    inputs = tokenizer(formatted_prompt, return_tensors="pt")
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+    Args:
+        model: Fine-tuned model
+        tokenizer: Associated tokenizer
+        prompt: Input prompt text
+        
+    Returns:
+        str: Generated response text
+        
+    Raises:
+        RuntimeError: If generation fails
+    """
+    try:
+        formatted_prompt = f"[INST] {prompt} [/INST]"
+        device = model.device
+        inputs = tokenizer(formatted_prompt, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    outputs = model.generate(
-        **inputs,
-        max_length=512,  # Increased for complaints
-        temperature=0.7,
-        do_sample=True,
-        num_return_sequences=1,
-    )
-
-    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+        outputs = model.generate(
+            **inputs,
+            max_length=512,
+            temperature=0.7,
+            do_sample=True,
+            num_return_sequences=1,
+        )
+        
+        return tokenizer.decode(outputs[0], skip_special_tokens=True)
+    except Exception as e:
+        raise RuntimeError(f"Generation failed: {str(e)}")
 
 
 # Usage example
