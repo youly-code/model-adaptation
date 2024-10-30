@@ -74,7 +74,6 @@ def prepare_fine_tuning():
 
 def prepare_dataset(tokenizer):
     """Prepare dataset for fine-tuning"""
-
     def tokenize_function(examples):
         """Tokenize the text examples"""
         return tokenizer(
@@ -86,21 +85,19 @@ def prepare_dataset(tokenizer):
         )
 
     print("Loading dataset...")
-    dataset = load_dataset("csv", data_files="src/data/ai_ethics_jokes_training.csv")
-
-    # Keep only necessary columns
-    dataset = dataset["train"].remove_columns(
-        ["timestamp", "difficulty", "type", "context"]
-    )
+    dataset = load_dataset("leonvanbokhorst/synthetic-complaints")
+    
+    print("Dataset structure:", dataset["train"].features)
+    print("First example:", dataset["train"][0])
 
     def format_prompt(example):
         """Format each example into Llama instruction format"""
         return {
-            "text": f"[INST] {example['instruction']}\n{example['input']} [/INST] {example['output']}"
+            "text": f"[INST] {example['instruction']} [/INST] {example['response']}"
         }
 
     print("Formatting prompts...")
-    formatted_dataset = dataset.map(format_prompt)
+    formatted_dataset = dataset["train"].map(format_prompt)
 
     print("Tokenizing dataset...")
     tokenized_dataset = formatted_dataset.map(
@@ -145,23 +142,19 @@ def train_model(model, tokenizer, dataset):
 
 def inference_example(model, tokenizer, prompt):
     """Generate text using fine-tuned model"""
-    # Convert model to inference mode
-    model = LanguageModel.for_inference(model)
-
+    # Format the prompt properly
+    formatted_prompt = f"[INST] {prompt} [/INST]"
+    
     # Ensure inputs are on the correct device
     device = model.device
-    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = tokenizer(formatted_prompt, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
-
-    # Add attention mask if not present
-    if "attention_mask" not in inputs:
-        inputs["attention_mask"] = torch.ones_like(inputs["input_ids"])
 
     outputs = model.generate(
         **inputs,
-        max_length=100,
+        max_length=512,  # Increased for complaints
         temperature=0.7,
-        do_sample=True,  # Enable sampling for temperature to take effect
+        do_sample=True,
         num_return_sequences=1,
     )
 
@@ -185,6 +178,11 @@ if __name__ == "__main__":
         # Save
         model.save_pretrained("./lora_finetuned")
         tokenizer.save_pretrained("./lora_finetuned")
+
+        # Example inference after training
+        prompt = "Write a frustrated complaint about poor customer service"
+        response = inference_example(model, tokenizer, prompt)
+        print(response)
 
     else:
         # Load

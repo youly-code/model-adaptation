@@ -26,6 +26,7 @@ import asyncio
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from typing import Literal
 
 dotenv.load_dotenv()
 
@@ -150,25 +151,41 @@ COMPLAINT_TOPICS = [
     "the future",
 ]
 
+# Add new constants for instruction tuning
+INSTRUCTION_TEMPLATE = """Below is a complaint about {topic}. Write a {style} response.
+
+Complaint: {complaint}
+
+Response: """
+
+SYSTEM_PROMPT = "You are an AI assistant that helps users express their complaints in different emotional styles."
+
 
 class ComplaintData(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-    instruction: str
-    response: str
+    messages: List[dict] = Field(default_factory=list)
+    conversation: dict = Field(default_factory=dict)
     metadata: dict = Field(default_factory=dict)
-
+    
     model_config = {
         "json_schema_extra": {
             "example": {
-                "instruction": "Complain about your job",
-                "response": "...",
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": "Write a frustrated complaint about work-life balance"},
+                    {"role": "assistant", "content": "..."}
+                ],
+                "conversation": {
+                    "instruction": "Write a frustrated complaint about work-life balance",
+                    "input": "",
+                    "output": "..."
+                },
                 "metadata": {
                     "sentiment": -0.8,
-                    "subjectivity": 0.6,
-                    "word_count": 25,
-                    "complexity_score": 0.7,
-                },
+                    "style": "frustrated",
+                    "topic": "work-life balance"
+                }
             }
         }
     }
@@ -419,7 +436,7 @@ async def generate_synthetic_data(
     temperature: float = 0.7,
     max_tokens: int = 1000,
 ) -> List[Dict]:
-    """Generate synthetic data using an LLM."""
+    """Generate synthetic data in instruction tuning format."""
     synthetic_data = []
 
     topics = sample_topics(n_samples)
@@ -430,27 +447,38 @@ async def generate_synthetic_data(
             topic = topics[i % len(topics)]
             style = styles[i % len(styles)]
 
-            prompt = f"You complain about {topic}."
-            full_prompt = f"Respond with one sentence in a {style} way: {prompt}"
-
+            instruction = f"Write a {style} complaint about {topic}"
+            
             response = client.generate(
                 model=OLLAMA_MODEL,
-                prompt=full_prompt,
+                prompt=instruction,
             )
 
             cleaned_response = "".join(
                 c for c in response["response"] if c.isalnum() or c in " .,!?-_'"
             )
 
-            data_point = {
-                "instruction": prompt,
-                "response": cleaned_response,
-                **analyze_response(cleaned_response),
-                "style": style,
-                "topic": topic,
-            }
+            # Format for instruction tuning
+            data_point = ComplaintData(
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": instruction},
+                    {"role": "assistant", "content": cleaned_response}
+                ],
+                conversation={
+                    "instruction": instruction,
+                    "input": "",  # Empty for this use case
+                    "output": cleaned_response
+                },
+                metadata={
+                    **analyze_response(cleaned_response),
+                    "style": style,
+                    "topic": topic
+                }
+            )
 
-            synthetic_data.append(data_point)
+            if quality_filter(data_point):
+                synthetic_data.append(data_point.model_dump())
 
         except Exception as e:
             print(f"Error generating sample: {str(e)}")
@@ -549,6 +577,8 @@ async def main():
         batch_data = await generate_synthetic_data(n_samples=10)
         # Extend the all_synthetic_data list with new batch
         all_synthetic_data.extend(batch_data)
+        # print one sample
+        print(batch_data[random.randint(0, len(batch_data) - 1)])
 
     # Save all accumulated data at once
     save_synthetic_data(
