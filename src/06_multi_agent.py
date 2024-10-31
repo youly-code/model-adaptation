@@ -1325,9 +1325,9 @@ class DiscussionPool:
             for metric in discussion["metrics"]:
                 if metric.startswith("error_"):
                     component = metric.split("error_")[1]
-                    error_counts[component] += sum(
-                        1 for x in discussion["metrics"][metric] if x
-                    )
+                    error_counts[component] += sum(bool(x)
+                                               for x in discussion["metrics"][metric])
+
                     total_operations[component] += len(discussion["metrics"][metric])
 
         return {
