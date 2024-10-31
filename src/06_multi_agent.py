@@ -222,9 +222,7 @@ class ResearchAgent:
 
             # Extract the first number from the response
             content = response["message"]["content"]
-            # Use regex to find the first number in the response
-            match = re.search(r"-?\d*\.?\d+", content)
-            if match:
+            if match := re.search(r"-?\d*\.?\d+", content):
                 sentiment = float(match.group())
                 return max(
                     min(sentiment, 1.0), -1.0
@@ -503,13 +501,11 @@ class SemanticRouter:
 
         # Filter available agents and store in a list
         available_agents = [
-            agent for agent in self.agents if agent.name != message.sender
-        ]
+                    agent for agent in self.agents if agent.name != message.sender
+                ] or [
+                        agent for agent in self.agents if agent.name != message.sender
+                    ]
 
-        if not available_agents:
-            available_agents = [
-                agent for agent in self.agents if agent.name != message.sender
-            ]
 
         # Calculate similarities
         for agent in available_agents:
@@ -1327,9 +1323,9 @@ class DiscussionPool:
             for metric in discussion["metrics"]:
                 if metric.startswith("error_"):
                     component = metric.split("error_")[1]
-                    error_counts[component] += sum(
-                        1 for x in discussion["metrics"][metric] if x
-                    )
+                    error_counts[component] += sum(bool(x)
+                                               for x in discussion["metrics"][metric])
+
                     total_operations[component] += len(discussion["metrics"][metric])
 
         return {
