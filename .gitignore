@@ -5,6 +5,8 @@
 ./checkpoints/
 ./logs/
 /lora*
+.pytest_cache/
+.benchmarks/
 
 
 # Byte-compiled / optimized / DLL files
