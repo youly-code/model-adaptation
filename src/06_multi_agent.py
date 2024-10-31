@@ -503,13 +503,11 @@ class SemanticRouter:
 
         # Filter available agents and store in a list
         available_agents = [
-            agent for agent in self.agents if agent.name != message.sender
-        ]
+                    agent for agent in self.agents if agent.name != message.sender
+                ] or [
+                        agent for agent in self.agents if agent.name != message.sender
+                    ]
 
-        if not available_agents:
-            available_agents = [
-                agent for agent in self.agents if agent.name != message.sender
-            ]
 
         # Calculate similarities
         for agent in available_agents:
