@@ -53,14 +53,45 @@ The codebase explores several key areas of model adaptation:
    - Hierarchical clustering dendrograms
    - Word analogy visualization
 
-4. **Synthetic Data Generation** (`05_synthetic_data.py`)
+4. **Model Fine-tuning** (`04_fine-tuning.py`)
+   - LoRA-based fine-tuning of LLMs
+   - Optimized training parameters
+   - Efficient memory management
+   - Key features:
+     - Custom tokenizer configuration
+     - Dataset preparation and formatting
+     - Gradient checkpointing
+     - Configurable LoRA parameters
+     - Inference optimization
+     - Training monitoring and logging
+   - Support for:
+     - Hugging Face models
+     - Custom datasets
+     - Instruction fine-tuning
+     - Performance optimization
+
+5. **Synthetic Data Generation** (`05_synthetic_data.py`)
    - Instruction-based data generation
    - Quality assessment with complexity scoring
    - Dataset versioning and management
    - Balanced dataset creation
    - NLTK-based linguistic analysis
 
-5. **Swarm Intelligence** (`07_swarm.py`)
+6. **Multi Agent Research Simulation** (`06_multi_agent.py`)
+   - Dynamic team composition based on research questions
+   - Adaptive agents with personality models
+   - Semantic routing of discussions
+   - Real-time discussion quality monitoring
+   - Advanced analytics and visualization
+   - Key features:
+     - Personality-driven agent behavior
+     - Belief system evolution
+     - Concept tracking and evolution
+     - Discussion quality metrics
+     - Knowledge base management
+     - External system integration
+
+7. **Swarm Intelligence** (`07_swarm.py`)
    - Boid-based flocking simulation
    - Dynamic wind events and turbulence
    - Adaptive behavior patterns
