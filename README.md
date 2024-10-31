@@ -1,5 +1,7 @@
 # Model Adaptation Examples
 
+[![CI Testing](https://github.com/leonvanbokhorst/model-adaptation/actions/workflows/ci.yml/badge.svg)](https://github.com/leonvanbokhorst/model-adaptation/actions/workflows/ci.yml)
+
 This repository contains example code demonstrating various model adaptation techniques covered in the Model Adaptation lectures at Fontys University of Applied Sciences (FICT), minor [AI for Society](https://www.fontys.nl/en/Study-at-Fontys/Exchange-programmes/Artificial-Intelligence-For-Society.htm) by [Leon van Bokhorst](https://github.com/leonvanbokhorst).
 
 ## Overview
@@ -39,7 +41,11 @@ The codebase explores several key areas of model adaptation:
      - Store availability
    - Support for both Ollama and OpenAI backends
    - Comprehensive product knowledge base
-   - Dynamic wind event simulation
+   - Dynamic content aggregation
+   - Inventory management integration
+   - Real-time availability tracking
+   - Customer review analysis
+   - Style recommendation engine
 
 3. **Semantic Space Visualization** (`03_semantic_space.py`)
    - 2D and 3D visualization of semantic embeddings
@@ -52,6 +58,8 @@ The codebase explores several key areas of model adaptation:
    - Semantic similarity heatmaps
    - Hierarchical clustering dendrograms
    - Word analogy visualization
+   - Temporal embedding analysis
+   - Cross-model embedding comparison
 
 4. **Model Fine-tuning** (`04_fine-tuning.py`)
    - LoRA-based fine-tuning of LLMs
@@ -69,6 +77,8 @@ The codebase explores several key areas of model adaptation:
      - Custom datasets
      - Instruction fine-tuning
      - Performance optimization
+     - Quantization techniques
+     - Model pruning
 
 5. **Synthetic Data Generation** (`05_synthetic_data.py`)
    - Instruction-based data generation
@@ -76,6 +86,11 @@ The codebase explores several key areas of model adaptation:
    - Dataset versioning and management
    - Balanced dataset creation
    - NLTK-based linguistic analysis
+   - Data augmentation techniques
+   - Quality validation pipelines
+   - Automated labeling
+   - Domain-specific generation
+   - Cross-validation support
 
 6. **Multi-Agent Research Simulation** (`06_multi_agent.py`)
    - Dynamic team composition based on research questions
@@ -90,12 +105,20 @@ The codebase explores several key areas of model adaptation:
      - Discussion quality metrics
      - Knowledge base management
      - External system integration
+     - Consensus building algorithms
+     - Debate simulation
+     - Research methodology adaptation
 
 7. **Swarm Intelligence** (`07_swarm.py`)
    - Boid-based flocking simulation
    - Dynamic wind events and turbulence
    - Adaptive behavior patterns
    - Complex environmental interactions
+   - Emergent behavior analysis
+   - Multi-agent coordination
+   - Environmental adaptation
+   - Performance optimization
+   - Real-time visualization
 
 ## Installation
 
@@ -109,6 +132,12 @@ Tests are written using pytest and can be run with:
 
 ```bash
 pytest
+```
+
+For integration tests only:
+
+```bash
+pytest -m integration
 ```
 
 ## License
