@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+markers = [
+    "integration: marks tests as integration tests",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py"] 
