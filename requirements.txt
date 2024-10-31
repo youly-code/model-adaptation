@@ -1,4 +1,5 @@
 ollama
+openai
 chromadb
 llama-cpp-python
 numpy   
