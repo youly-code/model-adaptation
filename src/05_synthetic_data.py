@@ -35,7 +35,7 @@ client = ollama.Client()
 
 # Constants
 USE_OLLAMA = True
-OLLAMA_MODEL = "mistral-nemo:latest"
+OLLAMA_MODEL = "hermes3:latest"
 
 COMPLAINT_STYLES = [
     "frustrated",
@@ -161,38 +161,13 @@ Response: """
 SYSTEM_PROMPT = "You are an AI assistant that helps users express their complaints in different emotional styles."
 
 
-class ComplaintData(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    messages: List[dict] = Field(default_factory=list)
-    conversation: dict = Field(default_factory=dict)
-    metadata: dict = Field(default_factory=dict)
-    
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": "Write a frustrated complaint about work-life balance"},
-                    {"role": "assistant", "content": "..."}
-                ],
-                "conversation": {
-                    "instruction": "Write a frustrated complaint about work-life balance",
-                    "input": "",
-                    "output": "..."
-                },
-                "metadata": {
-                    "sentiment": -0.8,
-                    "style": "frustrated",
-                    "topic": "work-life balance"
-                }
-            }
-        }
-    }
+# Add this class at the top with other imports
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        return obj.isoformat() if isinstance(obj, datetime) else super().default(obj)
 
 
 class GenerationConfig(BaseModel):
-    ollama_model: str = "mistral-nemo:latest"
     batch_size: int = 50
     max_retries: int = 3
     temperature: float = 0.7
@@ -285,14 +260,19 @@ def analyze_response(text: str) -> dict:
     }
 
 
-def quality_filter(data_point: ComplaintData) -> bool:
+def quality_filter(data_point: Dict) -> bool:
     """Filter out low-quality or inappropriate responses."""
-    analysis = analyze_response(data_point.response)
-    return (
-        analysis["word_count"] >= 10
-        and analysis["complexity_score"] > 0.3
-        and not contains_inappropriate_content(data_point.response)
-    )
+    try:
+        response = data_point["output"]
+        analysis = analyze_response(response)
+        return (
+            analysis["word_count"] >= 10
+            and analysis["complexity_score"] > 0.3
+            and not contains_inappropriate_content(response)
+        )
+    except (KeyError, AttributeError) as e:
+        logging.warning(f"Error in quality filter: {e}")
+        return False
 
 
 class DatasetManager:
@@ -442,13 +422,13 @@ async def generate_synthetic_data(
     topics = sample_topics(n_samples)
     styles = sample_styles(n_samples)
 
-    for i in tqdm(range(n_samples), desc="Generating samples"):
+    for i in range(n_samples):
         try:
             topic = topics[i % len(topics)]
             style = styles[i % len(styles)]
 
-            instruction = f"Write a {style} complaint about {topic}"
-            
+            instruction = f"Respond with only one sentence. Write a {style} complaint about {topic}."
+
             response = client.generate(
                 model=OLLAMA_MODEL,
                 prompt=instruction,
@@ -458,27 +438,23 @@ async def generate_synthetic_data(
                 c for c in response["response"] if c.isalnum() or c in " .,!?-_'"
             )
 
-            # Format for instruction tuning
-            data_point = ComplaintData(
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": instruction},
-                    {"role": "assistant", "content": cleaned_response}
-                ],
-                conversation={
-                    "instruction": instruction,
-                    "input": "",  # Empty for this use case
-                    "output": cleaned_response
-                },
-                metadata={
+            # Simplified data point structure
+            data_point = {
+                "instruction": instruction,
+                "input": "",  # Empty for this use case
+                "output": cleaned_response,
+                "metadata": {
                     **analyze_response(cleaned_response),
                     "style": style,
-                    "topic": topic
-                }
-            )
+                    "topic": topic,
+                },
+            }
 
-            if quality_filter(data_point):
-                synthetic_data.append(data_point.model_dump())
+            # Use the quality filter directly on the response
+            if len(
+                cleaned_response.split()
+            ) >= 10 and not contains_inappropriate_content(cleaned_response):
+                synthetic_data.append(data_point)
 
         except Exception as e:
             print(f"Error generating sample: {str(e)}")
@@ -489,104 +465,90 @@ async def generate_synthetic_data(
 
 def save_synthetic_data(
     data: List[Dict],
-    output_file: str,
     push_to_hf: bool = True,
     hf_repo: str = None,
-    test_size: float = 0.2,  # 20% for testing by default
+    test_size: float = 0.2,
     seed: int = 42,
+    max_retries: int = 3,
 ):
-    """Save synthetic data to file and optionally push to Hugging Face with train/test splits.
+    """Save synthetic data to Hugging Face by appending to existing dataset."""
+    if not push_to_hf:
+        return
+    if not hf_repo:
+        raise ValueError("hf_repo must be specified when push_to_hf is True")
 
-    Args:
-        data: List of data dictionaries
-        output_file: Path to output file (.json or .csv)
-        push_to_hf: Whether to push the dataset to Hugging Face
-        hf_repo: Hugging Face repository name (e.g. 'username/repo-name')
-        test_size: Fraction of data to use for testing (default: 0.2)
-        seed: Random seed for reproducibility
-    """
-    output_path = Path(output_file)
+    # Flatten the data structure
+    flattened_data = []
+    for item in data:
+        flattened_item = {
+            "instruction": item["instruction"],
+            "output": item["output"],
+            "sentiment": item["metadata"]["sentiment"],
+            "subjectivity": item["metadata"]["subjectivity"],
+            "word_count": item["metadata"]["word_count"],
+            "complexity_score": item["metadata"]["complexity_score"],
+            "style": item["metadata"]["style"],
+            "topic": item["metadata"]["topic"],
+        }
+        flattened_data.append(flattened_item)
 
-    # Save locally first
-    if output_path.suffix == ".json":
-        with open(output_path, "w") as f:
-            json.dump(data, f, indent=2)
-    elif output_path.suffix == ".csv":
-        if not data:
-            return
-        fieldnames = data[0].keys()
-        with open(output_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(data)
-    else:
-        raise ValueError("Output file must be .json or .csv")
-
-    # Push to Hugging Face if requested
-    if push_to_hf:
-        if not hf_repo:
-            raise ValueError("hf_repo must be specified when push_to_hf is True")
-
+    for attempt in range(max_retries):
         try:
-            # Try to load existing dataset
-            existing_dataset = None
+            # Load existing dataset
             try:
                 existing_dataset = datasets.load_dataset(hf_repo)
-            except Exception as e:
-                print(f"No existing dataset found: {e}")
-            existing_train = existing_dataset["train"]
-            existing_test = existing_dataset["test"]
+            except Exception:
+                # If dataset doesn't exist, create new one
+                existing_dataset = datasets.DatasetDict({
+                    "train": datasets.Dataset.from_list([]),
+                    "test": datasets.Dataset.from_list([])
+                })
 
-            # Convert new data to Dataset and split
-            new_dataset = datasets.Dataset.from_list(data)
-            new_splits = new_dataset.train_test_split(test_size=test_size, seed=seed)
+            # Convert new data to Dataset
+            new_dataset = datasets.Dataset.from_list(flattened_data)
+            splits = new_dataset.train_test_split(test_size=test_size, seed=seed)
 
-            # Combine with existing splits
-            combined_train = datasets.concatenate_datasets(
-                [existing_train, new_splits["train"]]
+            # Concatenate with existing data
+            merged_dataset = datasets.DatasetDict({
+                "train": datasets.concatenate_datasets([existing_dataset["train"], splits["train"]]),
+                "test": datasets.concatenate_datasets([existing_dataset["test"], splits["test"]])
+            })
+
+            # Push to hub
+            merged_dataset.push_to_hub(
+                hf_repo,
+                private=False,
+                token=os.environ["HF_TOKEN"],
+                max_shard_size="500MB",
+                embed_external_files=False,
             )
-            combined_test = datasets.concatenate_datasets(
-                [existing_test, new_splits["test"]]
-            )
+            print(f"Successfully appended dataset on attempt {attempt + 1}")
+            break
 
         except Exception as e:
-            print(f"No existing dataset found or error occurred: {e}")
-            # If loading fails, create new dataset and split
-            dataset = datasets.Dataset.from_list(data)
-            splits = dataset.train_test_split(test_size=test_size, seed=seed)
-            combined_train = splits["train"]
-            combined_test = splits["test"]
-
-        # Create DatasetDict with both splits
-        combined_dataset = datasets.DatasetDict(
-            {"train": combined_train, "test": combined_test}
-        )
-
-        # Push to hub
-        combined_dataset.push_to_hub(
-            hf_repo, private=False, token=os.environ["HF_TOKEN"]
-        )
+            if attempt == max_retries - 1:
+                print(f"Failed to upload after {max_retries} attempts. Final error: {str(e)}")
+                raise
+            print(f"Attempt {attempt + 1} failed, retrying... Error: {str(e)}")
+            time.sleep(5 * (attempt + 1))  # Exponential backoff
 
 
 async def main():
-    # Initialize list to store all synthetic data
-    all_synthetic_data = []
+    for i in range(100):
+        # Generate a larger initial dataset
+        all_synthetic_data = []
+        for _ in tqdm(range(10), desc=f"Generating batch {i + 1} of 100"):
+            batch_data = await generate_synthetic_data(
+                n_samples=10
+            )  # 10 samples per batch
+            all_synthetic_data.extend(batch_data)
 
-    # Generate data in batches
-    for _ in range(100):
-        batch_data = await generate_synthetic_data(n_samples=10)
-        # Extend the all_synthetic_data list with new batch
-        all_synthetic_data.extend(batch_data)
-        # print one sample
-        print(batch_data[random.randint(0, len(batch_data) - 1)])
-
-    # Save all accumulated data at once
-    save_synthetic_data(
-        all_synthetic_data,
-        "synthetic_data_complete.json",
-        push_to_hf=True,
-        hf_repo="leonvanbokhorst/synthetic-complaints",
-    )
+        save_synthetic_data(
+            all_synthetic_data,
+            push_to_hf=True,
+            hf_repo="leonvanbokhorst/synthetic-complaints-v2",
+            max_retries=3,
+        )
 
 
 if __name__ == "__main__":

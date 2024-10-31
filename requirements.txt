@@ -28,4 +28,7 @@ pydantic-settings
 huggingface-hub
 nltk
 textblob
+networkx
+pygame
+statistics
 
