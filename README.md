@@ -109,17 +109,6 @@ The codebase explores several key areas of model adaptation:
      - Debate simulation
      - Research methodology adaptation
 
-7. **Swarm Intelligence** (`07_swarm.py`)
-   - Boid-based flocking simulation
-   - Dynamic wind events and turbulence
-   - Adaptive behavior patterns
-   - Complex environmental interactions
-   - Emergent behavior analysis
-   - Multi-agent coordination
-   - Environmental adaptation
-   - Performance optimization
-   - Real-time visualization
-
 ## Installation
 
 ```bash

@@ -32,4 +32,6 @@ textblob
 networkx
 pygame
 statistics
+fastapi 
+uvicorn
 
