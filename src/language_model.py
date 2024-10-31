@@ -6,6 +6,7 @@ import logging
 from enum import Enum
 import openai
 import ollama
+import asyncio
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -107,7 +108,8 @@ class OllamaModel(BaseLanguageModel):
         super().__init__()
         self.model_name = model_name
         self.host = host
-        self.client = None
+        self.client = ollama.Client(host=self.host)
+        self._lock = asyncio.Lock()
 
     async def generate_response(
         self,
@@ -120,40 +122,36 @@ class OllamaModel(BaseLanguageModel):
         try:
             logger.debug(f"Sending request to Ollama: {prompt}")
             
-            if self.client is None:
-                self.client = ollama.Client(host=self.host)
-            
-            options = {}
-            if temperature is not None:
-                options["temperature"] = temperature
+            options = {"temperature": temperature}
             if max_tokens is not None:
                 options["num_predict"] = max_tokens
             
-            response = self.client.generate(
-                model=self.model_name,
-                prompt=prompt,
-                options=options,
-                **kwargs,
-            )
-            
-            if hasattr(response, '__await__'):
-                response = await response
-            
-            response_text = response["response"]
-            
-            if not response_text or not isinstance(response_text, str):
-                raise ResponseError("Invalid response format")
-            
-            return response_text
+            async with self._lock:
+                response = self.client.generate(
+                    model=self.model_name,
+                    prompt=prompt,
+                    options=options,
+                    **kwargs,
+                )
+                
+                if not isinstance(response, dict) or "response" not in response:
+                    raise ResponseError("Invalid response format")
+                
+                response_text = response["response"]
+                if not response_text or not isinstance(response_text, str):
+                    raise ResponseError("Invalid response format")
+                
+                return response_text
 
-        except ollama.ResponseError as e:
-            logger.error(f"Ollama API error: {str(e)}")
-            raise ResponseError(f"Ollama API error: {str(e)}") from e
-        except ResponseError as e:
-            logger.error(f"Invalid response: {str(e)}")
-            raise  # Re-raise ResponseError directly
         except Exception as e:
-            logger.error(f"Unexpected error: {str(e)}")
-            raise ConnectionError(f"Failed to connect to Ollama API: {str(e)}") from e
+            if "ResponseError" in e.__class__.__name__:
+                logger.error(f"Ollama API error: {str(e)}")
+                raise ResponseError(f"Ollama API error: {str(e)}") from e
+            elif isinstance(e, ResponseError):
+                logger.error(f"Invalid response: {str(e)}")
+                raise
+            else:
+                logger.error(f"Unexpected error: {str(e)}")
+                raise ConnectionError(f"Failed to connect to Ollama API: {str(e)}") from e
 
 
