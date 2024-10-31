@@ -222,9 +222,7 @@ class ResearchAgent:
 
             # Extract the first number from the response
             content = response["message"]["content"]
-            # Use regex to find the first number in the response
-            match = re.search(r"-?\d*\.?\d+", content)
-            if match:
+            if match := re.search(r"-?\d*\.?\d+", content):
                 sentiment = float(match.group())
                 return max(
                     min(sentiment, 1.0), -1.0
