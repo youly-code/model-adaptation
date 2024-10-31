@@ -77,7 +77,7 @@ The codebase explores several key areas of model adaptation:
    - Balanced dataset creation
    - NLTK-based linguistic analysis
 
-6. **Multi Agent Research Simulation** (`06_multi_agent.py`)
+6. **Multi-Agent Research Simulation** (`06_multi_agent.py`)
    - Dynamic team composition based on research questions
    - Adaptive agents with personality models
    - Semantic routing of discussions
