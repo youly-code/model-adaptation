@@ -5,14 +5,36 @@ import ollama
 
 @pytest.fixture
 def mock_ollama_client():
-    with patch('ollama.Client') as mock_client:
+    with patch('src.language_model.ollama.Client') as mock_client:
         mock_instance = Mock()
         mock_client.return_value = mock_instance
         yield mock_instance
 
+@pytest.fixture
+def ollama_model():
+    return OllamaModel()
+
 @pytest.mark.asyncio
 async def test_generate_response_success(mock_ollama_client):
     expected_response = "Test response"
+    mock_ollama_client.generate.return_value = {"response": expected_response}
+
+    model = OllamaModel()
+    response = await model.generate_response("Test prompt")
+
+    assert response == expected_response
+    mock_ollama_client.generate.assert_called_once_with(
+        model="llama3.2:latest",
+        prompt="Test prompt",
+        options={"temperature": 0.7}
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_response_async_path(mock_ollama_client):
+    """Test async response handling."""
+    expected_response = "Test response"
+    
     mock_ollama_client.generate.return_value = {"response": expected_response}
     
     model = OllamaModel()
