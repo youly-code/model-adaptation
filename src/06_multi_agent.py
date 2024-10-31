@@ -217,19 +217,20 @@ class ResearchAgent:
         try:
             prompt = f"Analyze the sentiment of this message and return a single number between -1 and 1: {message.content}"
             response = await self.client.chat(
-                model="hermes3", 
-                messages=[{"role": "user", "content": prompt}]
+                model="hermes3", messages=[{"role": "user", "content": prompt}]
             )
-            
+
             # Extract the first number from the response
             content = response["message"]["content"]
             # Use regex to find the first number in the response
-            match = re.search(r'-?\d*\.?\d+', content)
+            match = re.search(r"-?\d*\.?\d+", content)
             if match:
                 sentiment = float(match.group())
-                return max(min(sentiment, 1.0), -1.0)  # Ensure value is between -1 and 1
+                return max(
+                    min(sentiment, 1.0), -1.0
+                )  # Ensure value is between -1 and 1
             return 0.0  # Default neutral sentiment if no number found
-            
+
         except Exception as e:
             logger.error(f"Sentiment analysis failed: {e}")
             return 0.0  # Return neutral sentiment on error
@@ -323,27 +324,30 @@ class ResearchAgent:
             Example format: {{"concept1": 0.8, "concept2": 0.6}}"""
 
             response = await self.client.chat(
-                model="hermes3", 
-                messages=[{"role": "user", "content": prompt}]
+                model="hermes3", messages=[{"role": "user", "content": prompt}]
             )
 
             content = response["message"]["content"]
-            
+
             # Clean the response to ensure valid JSON
             content = content.strip()
-            if not content.startswith('{'): # Find the first {
-                content = content[content.find('{'):]
-            if not content.endswith('}'): # Find the last }
-                content = content[:content.rfind('}')+1]
+            if not content.startswith("{"):  # Find the first {
+                content = content[content.find("{") :]
+            if not content.endswith("}"):  # Find the last }
+                content = content[: content.rfind("}") + 1]
 
             try:
                 beliefs = json.loads(content)
                 # Ensure all values are floats
-                return {k: float(v) for k, v in beliefs.items() if isinstance(v, (int, float, str))}
+                return {
+                    k: float(v)
+                    for k, v in beliefs.items()
+                    if isinstance(v, (int, float, str))
+                }
             except (json.JSONDecodeError, ValueError) as e:
                 logger.warning(f"Failed to parse belief system JSON: {e}")
                 return {"default_belief": 0.5}  # Return default belief if parsing fails
-                
+
         except Exception as e:
             logger.error(f"Failed to initialize belief system: {e}")
             return {"default_belief": 0.5}  # Return default belief on any error
@@ -441,6 +445,36 @@ class AdaptiveAgent(ResearchAgent):
                 0, min(1, self.personality_model.traits[trait])
             )
 
+    async def track_learning_metrics(self, message: Message, outcome: Dict[str, Any]):
+        """Tracks and updates learning metrics based on interactions."""
+        try:
+            # Track concept understanding
+            concepts = await self.extract_concepts(message.content)
+            for concept in concepts:
+                current_belief = self.belief_system.get(concept, 0.5)
+                # Calculate confidence based on outcome
+                confidence = outcome.get("confidence", 0.5)
+                impact = outcome.get("impact", 0)
+
+                # Weighted update of belief strength
+                new_belief = current_belief * 0.7 + confidence * 0.2 + impact * 0.1
+
+                # Normalize to 0-1 range
+                self.belief_system[concept] = max(0.0, min(1.0, new_belief))
+
+            # Track learning progress
+            self.learning_history["interactions"].append(
+                {
+                    "timestamp": time.time(),
+                    "concepts": concepts,
+                    "outcome": outcome,
+                    "belief_updates": dict(self.belief_system),
+                }
+            )
+
+        except Exception as e:
+            logger.error(f"Error tracking learning metrics: {e}")
+
 
 class SemanticRouter:
     """Routes messages to the most relevant agent based on semantic similarity.
@@ -466,36 +500,33 @@ class SemanticRouter:
         message_embedding = await self.get_cached_embedding(message.content)
         similarities = []
         agent_list = []  # Add this list to maintain order
-        
+
         # Filter available agents and store in a list
         available_agents = [
-            agent for agent in self.agents 
-            if agent.name != message.sender
+            agent for agent in self.agents if agent.name != message.sender
         ]
 
         if not available_agents:
             available_agents = [
-                agent for agent in self.agents 
-                if agent.name != message.sender
+                agent for agent in self.agents if agent.name != message.sender
             ]
-        
+
         # Calculate similarities
         for agent in available_agents:
             expertise_embedding = await self.get_cached_embedding(agent.expertise)
             similarity = cosine_similarity(
-                message_embedding.reshape(1, -1), 
-                expertise_embedding.reshape(1, -1)
+                message_embedding.reshape(1, -1), expertise_embedding.reshape(1, -1)
             )[0][0]
             similarities.append(similarity)
             agent_list.append(agent)  # Keep track of agents in same order
 
         # Convert to numpy array for calculations
         similarities = np.array(similarities)
-        
+
         if len(similarities) == 0:
             # Fallback if no similarities calculated
             return available_agents[0], 0.0
-        
+
         # Calculate probabilities
         probabilities = np.exp(similarities) / np.sum(np.exp(similarities))
         temperature = 0.8
@@ -517,83 +548,33 @@ class TeamComposer:
         self.client = client
         self.expertise_cache = {}
 
-    async def compose_team(self, research_question: str) -> List[Dict[str, Any]]:
-        """Analyzes research question and generates optimal team composition."""
-        try:
-            logger.debug(
-                f"\n=== Starting Team Composition for Research Question ===\n{research_question}"
+    async def _generate_team_specs(self, analysis: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+        """Generates team specifications from analysis results."""
+        team_specs = []
+        
+        # Generate domain experts
+        for domain in analysis["domains"]:
+            expert_spec = await self._generate_expert_spec(
+                domain=domain,
+                perspectives=analysis["perspectives"],
+                biases=analysis["biases"]
             )
-
-            prompt = f"""Analyze this research question and identify:
-            1. Key knowledge domains required (list 4-6)
-            2. Critical perspectives needed
-            3. Potential cognitive biases to address
-            4. Methodological requirements
-
-            Research Question: {research_question}
-
-            Format your response as JSON with these keys: domains, perspectives, biases, methods"""
-
-            logger.debug(f"Sending analysis prompt to LLM:\n{prompt}")
-
-            response = await self.client.chat(
-                model="hermes3", messages=[{"role": "user", "content": prompt}]
+            team_specs.append(expert_spec)
+            
+        # Generate methodologist if needed
+        if analysis.get("methods"):
+            methodologist_spec = await self._generate_methodologist_spec(
+                methods=analysis["methods"]
             )
+            team_specs.append(methodologist_spec)
+            
+        # Validate team composition
+        if not team_specs:
+            raise ValueError("Failed to generate any team members")
+            
+        return team_specs
 
-            logger.debug(
-                f"Received analysis response:\n{response['message']['content']}"
-            )
-
-            analysis = json.loads(response["message"]["content"])
-            logger.debug(f"Parsed analysis:\n{json.dumps(analysis, indent=2)}")
-
-            team_specs = []
-
-            # Generate domain experts
-            logger.info("\n=== Generating Domain Experts ===")
-            for domain in analysis["domains"]:
-                logger.debug(f"\nGenerating expert for domain: {domain}")
-                expert_spec = await self._generate_expert_spec(
-                    domain, analysis["perspectives"], analysis["biases"]
-                )
-                logger.debug(
-                    f"Generated expert spec:\n{json.dumps(expert_spec, indent=2)}"
-                )
-                team_specs.append(expert_spec)
-
-            # Add methodology specialist
-            if analysis["methods"]:
-                logger.info("\n=== Generating Methodology Specialist ===")
-                method_spec = await self._generate_methodologist_spec(
-                    analysis["methods"]
-                )
-                logger.debug(
-                    f"Generated methodologist spec:\n{json.dumps(method_spec, indent=2)}"
-                )
-                team_specs.append(method_spec)
-
-            # Add integrator/synthesizer
-            logger.info("\n=== Generating Synthesizer ===")
-            synth_spec = await self._generate_synthesizer_spec(
-                analysis["domains"], analysis["perspectives"]
-            )
-            logger.debug(
-                f"Generated synthesizer spec:\n{json.dumps(synth_spec, indent=2)}"
-            )
-            team_specs.append(synth_spec)
-
-            logger.info(
-                f"\n=== Team Composition Complete ===\nTotal agents: {len(team_specs)}"
-            )
-            return team_specs
-
-        except Exception as e:
-            logger.error(f"Error composing team: {str(e)}")
-            raise
-
-    async def _generate_expert_spec(
-        self, domain: str, perspectives: List[str], biases: List[str]
-    ) -> Dict[str, Any]:
+    async def _generate_expert_spec(self, domain: str, perspectives: List[str], biases: List[str]) -> Dict[str, Any]:
         """Generates specification for a domain expert."""
         prompt = f"""Create a research agent specialized in {domain}.
         Consider these perspectives: {perspectives}
@@ -612,26 +593,20 @@ class TeamComposer:
         logger.debug(f"Sending expert generation prompt:\n{prompt}")
 
         response = await self.client.chat(
-            model="hermes3", messages=[{"role": "user", "content": prompt}]
+            model="hermes3", 
+            messages=[{"role": "user", "content": prompt}]
         )
 
         try:
             spec = json.loads(response["message"]["content"])
-            # Ensure personality is present
-            if "personality" not in spec:
-                spec["personality"] = f"Expert researcher in {domain}"
+            # Ensure required fields are present
+            required_fields = ["name", "expertise", "personality"]
+            if not all(field in spec for field in required_fields):
+                raise ValueError(f"Missing required fields in expert spec: {required_fields}")
             return spec
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse expert spec: {e}")
-            # Return a default spec
-            return {
-                "name": f"Dr. {domain.title().replace(' ', '')}",
-                "expertise": domain,
-                "personality": f"Expert researcher in {domain}",
-                "traits": ["analytical", "thorough", "objective"],
-                "biases": ["confirmation bias"],
-                "perspective": f"Specialized knowledge in {domain}",
-            }
+            raise ValueError(f"Could not generate valid expert spec for domain: {domain}")
 
     async def _generate_methodologist_spec(self, methods: List[str]) -> Dict[str, Any]:
         """Generates specification for methodology specialist."""
@@ -642,60 +617,79 @@ class TeamComposer:
         {{
             "name": "a fitting name for the methodology specialist",
             "expertise": "detailed description of their methodological expertise",
-            "personality": "description of their personality traits",
-            "traits": ["list", "of", "key", "personality", "traits"],
-            "biases": ["list", "of", "potential", "biases"],
-            "perspective": ["list", "of", "unique", "perspectives"]
+            "personality": "description of their personality traits"
         }}
 
-        Return ONLY valid JSON, no other text.
-        """
+        Return ONLY valid JSON, no other text."""
 
         logger.debug(f"Sending methodologist prompt:\n{prompt}")
 
+        response = await self.client.chat(
+            model="hermes3", 
+            messages=[{"role": "user", "content": prompt}]
+        )
+
         try:
+            spec = json.loads(response["message"]["content"])
+            # Ensure required fields are present
+            required_fields = ["name", "expertise", "personality"]
+            if not all(field in spec for field in required_fields):
+                raise ValueError(f"Missing required fields in methodologist spec: {required_fields}")
+            return spec
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse methodologist spec: {e}")
+            raise ValueError("Could not generate valid methodologist spec")
+
+    async def compose_team(self, research_question: str) -> List[Dict[str, Any]]:
+        """Analyzes research question and generates optimal team composition."""
+        try:
+            logger.debug(f"\n=== Starting Team Composition for Research Question ===\n{research_question}")
+
+            prompt = f"""Analyze this research question and identify:
+            1. Key knowledge domains required (list 4-6)
+            2. Critical perspectives needed
+            3. Potential cognitive biases to address
+            4. Methodological requirements
+
+            Research Question: {research_question}
+
+            Return a JSON object with exactly these keys and array values:
+            {{
+                "domains": ["domain1", "domain2"],
+                "perspectives": ["perspective1", "perspective2"],
+                "biases": ["bias1", "bias2"],
+                "methods": ["method1", "method2"]
+            }}
+            
+            Important:
+            - Use only simple strings in arrays
+            - No explanations or dashes in the strings
+            - No additional text before or after the JSON
+            - Ensure valid JSON formatting"""
+
             response = await self.client.chat(
-                model="hermes3", messages=[{"role": "user", "content": prompt}]
+                model="hermes3", 
+                messages=[{"role": "user", "content": prompt}]
             )
 
-            logger.debug(
-                f"Received methodologist response:\n{response['message']['content']}"
-            )
-
-            # Try to clean and parse the JSON
+            # Clean and parse the response
             content = response["message"]["content"].strip()
-            if not content.startswith("{"):
-                # Try to find JSON block
-                start = content.find("{")
-                end = content.rfind("}") + 1
-                if start >= 0 and end > start:
-                    content = content[start:end]
-                else:
-                    raise ValueError("No JSON object found in response")
-
+            start = content.find("{")
+            end = content.rfind("}") + 1
+            if start >= 0 and end > start:
+                content = content[start:end]
+            
             try:
-                return json.loads(content)
+                analysis = json.loads(content)
+                logger.debug(f"Parsed analysis:\n{json.dumps(analysis, indent=2)}")
+                # Add await here
+                return await self._generate_team_specs(analysis)
             except json.JSONDecodeError as e:
-                logger.error(f"JSON parsing error: {e}")
-                logger.error(f"Attempted to parse: {content}")
-                # Return a default methodologist spec as fallback
-                return {
-                    "name": "Dr. Methodicus",
-                    "expertise": "Research methodology and experimental design",
-                    "personality": "Rigorous, systematic, and detail-oriented",
-                    "traits": {
-                        "analytical": 0.9,
-                        "thoroughness": 0.8,
-                        "objectivity": 0.9,
-                        "precision": 0.85,
-                        "skepticism": 0.7,
-                    },
-                    "biases": ["confirmation bias", "methodological purism"],
-                    "perspective": "Ensures scientific rigor and methodological soundness",
-                }
+                logger.error(f"Failed to parse LLM response as JSON: {e}\nResponse was: {content}")
+                raise ValueError("Could not generate valid team composition from LLM response")
 
         except Exception as e:
-            logger.error(f"Error generating methodologist spec: {e}")
+            logger.error(f"Error composing team: {str(e)}")
             raise
 
     async def _generate_synthesizer_spec(
@@ -770,51 +764,40 @@ async def initialize_agents(
     client: AsyncClient, chat_history: ChatHistory, research_question: str = None
 ) -> List[AdaptiveAgent]:
     """Initialize the agent pool with dynamically generated team."""
-
     try:
         logger.debug(
             f"\n=== Initializing Dynamic Team for Research Question ===\n{research_question}"
         )
         composer = TeamComposer(client)
 
-        try:
+        # Add timeout handling
+        async with asyncio.timeout(30):  # 30 second timeout
             team_specs = await composer.compose_team(research_question)
-        except Exception as e:
-            logger.error(f"Failed to compose team: {str(e)}")
-            # Provide minimal emergency fallback
-            return [
-                AdaptiveAgent(
-                    name="Emergency Backup Agent",
-                    personality="Balanced and adaptable researcher",
-                    expertise="General discussion and problem-solving",
+
+        agents = []
+        for spec in team_specs:
+            try:
+                agent = AdaptiveAgent(
+                    name=spec["name"],
+                    personality=spec.get("personality", "Balanced researcher"),
+                    expertise=spec["expertise"],
                     client=client,
                     chat_history=chat_history,
                 )
-            ]
+                await agent.initialize()
+                agents.append(agent)
+            except Exception as e:
+                logger.error(f"Failed to initialize agent from spec: {e}")
+                continue
 
-        logger.debug("\n=== Creating Agent Instances ===")
-        agents = []
-        for spec in team_specs:
-            logger.debug(f"\nCreating agent from spec:\n{json.dumps(spec, indent=2)}")
-
-            agent = AdaptiveAgent(
-                name=spec["name"],
-                personality=spec.get("personality", "Balanced researcher"),
-                expertise=spec["expertise"],
-                client=client,
-                chat_history=chat_history,
-            )
-
-            # Initialize the agent
-            await agent.initialize()
-            agents.append(agent)
-
-            logger.debug(f"Created agent: {agent.name}")
-            logger.debug(f"Personality: {agent.personality}")
-            logger.debug(f"Expertise: {agent.expertise}")
+        if not agents:
+            raise ValueError("No agents could be initialized")
 
         return agents
 
+    except asyncio.TimeoutError:
+        logger.error("Team composition timed out")
+        raise
     except Exception as e:
         logger.error(f"Error initializing agents: {str(e)}")
         raise
@@ -1527,6 +1510,33 @@ class DiscussionAnalytics:
 
         return graph
 
+    async def generate_learning_visualization(self) -> Dict[str, Any]:
+        """Generates visualization data for learning progress."""
+        try:
+            metrics = {
+                "belief_evolution": defaultdict(list),
+                "interaction_quality": [],
+                "concept_coverage": defaultdict(int),
+                "agent_contributions": defaultdict(int),
+            }
+
+            # Process learning history
+            for agent in self.agents:
+                for entry in agent.learning_history["interactions"]:
+                    timestamp = entry["timestamp"]
+                    for concept, belief in entry["belief_updates"].items():
+                        metrics["belief_evolution"][concept].append(
+                            {"time": timestamp, "value": belief}
+                        )
+
+                    # Track other metrics...
+
+            return metrics
+
+        except Exception as e:
+            logger.error(f"Error generating visualization: {e}")
+            return {}
+
 
 class ExternalIntegration:
     """Handles external system integration"""
@@ -1706,9 +1716,9 @@ if __name__ == "__main__":
             run_discussion(
                 topic="Generative AI in Education",
                 research_question=research_question,
-                num_turns=20,
-                min_agents=3,  # Min agents in the discussion
-                max_consecutive=2,  # Max consecutive turns for the same agent
+                num_turns=10,
+                min_agents=2,  # Min agents in the discussion
+                max_consecutive=1,  # Max consecutive turns for the same agent
             )
         )
     except KeyboardInterrupt:

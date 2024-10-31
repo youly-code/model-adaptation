@@ -422,7 +422,7 @@ async def generate_synthetic_data(
     topics = sample_topics(n_samples)
     styles = sample_styles(n_samples)
 
-    for i in tqdm(range(n_samples), desc="Generating samples"):
+    for i in range(n_samples):
         try:
             topic = topics[i % len(topics)]
             style = styles[i % len(styles)]
@@ -471,7 +471,7 @@ def save_synthetic_data(
     seed: int = 42,
     max_retries: int = 3,
 ):
-    """Save synthetic data to Hugging Face with train/test splits."""
+    """Save synthetic data to Hugging Face by appending to existing dataset."""
     if not push_to_hf:
         return
     if not hf_repo:
@@ -494,52 +494,61 @@ def save_synthetic_data(
 
     for attempt in range(max_retries):
         try:
-            # Convert flattened data to Dataset and split
+            # Load existing dataset
+            try:
+                existing_dataset = datasets.load_dataset(hf_repo)
+            except Exception:
+                # If dataset doesn't exist, create new one
+                existing_dataset = datasets.DatasetDict({
+                    "train": datasets.Dataset.from_list([]),
+                    "test": datasets.Dataset.from_list([])
+                })
+
+            # Convert new data to Dataset
             new_dataset = datasets.Dataset.from_list(flattened_data)
             splits = new_dataset.train_test_split(test_size=test_size, seed=seed)
 
-            # Create DatasetDict with both splits
-            dataset_dict = datasets.DatasetDict(
-                {"train": splits["train"], "test": splits["test"]}
-            )
+            # Concatenate with existing data
+            merged_dataset = datasets.DatasetDict({
+                "train": datasets.concatenate_datasets([existing_dataset["train"], splits["train"]]),
+                "test": datasets.concatenate_datasets([existing_dataset["test"], splits["test"]])
+            })
 
             # Push to hub
-            dataset_dict.push_to_hub(
+            merged_dataset.push_to_hub(
                 hf_repo,
                 private=False,
                 token=os.environ["HF_TOKEN"],
                 max_shard_size="500MB",
                 embed_external_files=False,
             )
-            print(f"Successfully uploaded dataset on attempt {attempt + 1}")
+            print(f"Successfully appended dataset on attempt {attempt + 1}")
             break
 
         except Exception as e:
             if attempt == max_retries - 1:
-                print(
-                    f"Failed to upload after {max_retries} attempts. Final error: {str(e)}"
-                )
+                print(f"Failed to upload after {max_retries} attempts. Final error: {str(e)}")
                 raise
             print(f"Attempt {attempt + 1} failed, retrying... Error: {str(e)}")
             time.sleep(5 * (attempt + 1))  # Exponential backoff
 
 
 async def main():
-    # Generate a larger initial dataset
-    all_synthetic_data = []
-    for _ in range(500):  # Generate 10 batches
-        batch_data = await generate_synthetic_data(n_samples=10)  # 10 samples per batch
-        all_synthetic_data.extend(batch_data)
-        print(f"Generated batch with {len(batch_data)} samples")
-        # Print a random example from this batch
-        print(batch_data[random.randint(0, len(batch_data) - 1)])
+    for i in range(100):
+        # Generate a larger initial dataset
+        all_synthetic_data = []
+        for _ in tqdm(range(10), desc=f"Generating batch {i + 1} of 100"):
+            batch_data = await generate_synthetic_data(
+                n_samples=10
+            )  # 10 samples per batch
+            all_synthetic_data.extend(batch_data)
 
-    save_synthetic_data(
-        all_synthetic_data,
-        push_to_hf=True,
-        hf_repo="leonvanbokhorst/synthetic-complaints-v2",
-        max_retries=3,
-    )
+        save_synthetic_data(
+            all_synthetic_data,
+            push_to_hf=True,
+            hf_repo="leonvanbokhorst/synthetic-complaints-v2",
+            max_retries=3,
+        )
 
 
 if __name__ == "__main__":
