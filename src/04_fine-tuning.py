@@ -308,9 +308,9 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
                     print(f"Response: {response}")
 
                     # Track response stability
-                    if prompt in self.previous_responses:
-                        if response == self.previous_responses[prompt]:
-                            print("Warning: Identical response to previous step")
+                    if prompt in self.previous_responses and response == self.previous_responses[prompt]:
+                        print("Warning: Identical response to previous step")
+
                     self.previous_responses[prompt] = response
 
                 model.train()
