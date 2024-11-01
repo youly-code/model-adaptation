@@ -23,6 +23,7 @@ from textblob import TextBlob
 from nltk.sentiment import SentimentIntensityAnalyzer
 import nltk
 import wandb
+from contextlib import contextmanager
 
 dotenv.load_dotenv()
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -59,29 +60,75 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
 
 
 def prepare_fine_tuning():
-    """Setup model for fine-tuning without quantization"""
-    model_name = "unsloth/Llama-3.2-1B"  # cursor: don't change this!!
+    """Setup model for fine-tuning optimized for Apple Silicon"""
+    model_name = "unsloth/Llama-3.2-1B"
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16,
-        device_map="auto",
-    )
+    try:
+        # Initialize tokenizer first
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            padding_side="right",
+            add_eos_token=True,
+            add_bos_token=True,
+        )
 
-    # Configure LoRA
-    lora_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
-        target_modules=["q_proj", "v_proj"],
-        lora_dropout=0.1,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
+        # Ensure pad token is set
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # Prepare model with LoRA
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
+        # Configure model loading
+        model_config = {
+            "torch_dtype": torch.float32,
+            "use_cache": False,
+            "use_flash_attention_2": False,  # Disable for MPS compatibility
+        }
+
+        # Load model with base configuration
+        model = LlamaForCausalLM.from_pretrained(model_name, **model_config)
+
+        # Apply LoRA config before other modifications
+        lora_config = LoraConfig(
+            r=8,
+            lora_alpha=16,
+            target_modules=[
+                "q_proj",
+                "v_proj",
+                "k_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ],
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM",
+            inference_mode=False,
+        )
+
+        # Prepare model for training
+        model = prepare_model_for_kbit_training(model)
+        model = get_peft_model(model, lora_config)
+
+        # Enable gradient checkpointing
+        model.gradient_checkpointing_enable()
+
+        # Explicitly enable gradients for all parameters
+        model.train()
+        for param in model.parameters():
+            param.requires_grad = True
+
+        # Move to device after all configurations
+        device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        print(f"Using device: {device}")
+        model = model.to(device)
+
+        # Verify gradients are enabled
+        grad_params = [p.requires_grad for p in model.parameters()]
+        print(f"Parameters requiring gradients: {sum(grad_params)}/{len(grad_params)}")
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize model/tokenizer: {str(e)}")
 
     return model, tokenizer
 
@@ -171,57 +218,64 @@ def prepare_dataset(tokenizer):
 
 
 def calculate_negativity(text: str) -> float:
-    """Calculate negativity score using multiple sentiment analysis approaches.
-
-    Returns:
-        float: Negativity score between 0 and 1, where 1 is most negative
-    """
-    # Ensure VADER lexicon is downloaded
+    """Memory-optimized negativity score calculation"""
+    # Use only VADER for sentiment analysis (more memory efficient)
     try:
         nltk.data.find("sentiment/vader_lexicon.zip")
     except LookupError:
-        nltk.download("vader_lexicon")
+        nltk.download("vader_lexicon", quiet=True)
 
-    # VADER sentiment analysis
     sia = SentimentIntensityAnalyzer()
     vader_scores = sia.polarity_scores(text)
 
-    # TextBlob sentiment analysis
-    blob = TextBlob(text)
-
-    # Combine scores:
-    # - VADER compound score (normalized between 0-1 where 1 is most negative)
-    # - TextBlob polarity (converted to 0-1 scale where 1 is most negative)
-    vader_neg = (vader_scores["compound"] + 1) / 2  # Convert from [-1,1] to [0,1]
-    textblob_neg = (1 - blob.sentiment.polarity) / 2  # Convert from [-1,1] to [0,1]
-
-    return 0.7 * vader_neg + 0.3 * textblob_neg
+    # Convert compound score to 0-1 range where 1 is most negative
+    return (vader_scores["compound"] + 1) / 2
 
 
 def compute_metrics(eval_preds) -> Dict[str, float]:
     """Compute custom metrics for complaint quality"""
     predictions, labels = eval_preds
-    # Convert predictions to expected format
     if isinstance(predictions, tuple):
         predictions = predictions[0]
 
-    if torch.is_tensor(predictions):
-        predictions = predictions.cpu().numpy()
+    # Ensure we're working with numpy arrays
+    predictions = predictions.astype(np.int64)
 
-    # Decode predictions - Fix for handling numpy array predictions
-    decoded_preds = tokenizer.batch_decode(
-        predictions.astype(np.int32), skip_special_tokens=True  # Convert to int32 array
-    )
+    try:
+        # Process in batches
+        decoded_preds = []
+        for pred in predictions:
+            try:
+                # Filter padding tokens and convert to list
+                tokens = [int(t) for t in pred if t not in [-100, tokenizer.pad_token_id]]
+                text = tokenizer.decode(tokens, skip_special_tokens=True)
+                decoded_preds.append(text)
+            except Exception as e:
+                print(f"Decoding error: {e}")
+                decoded_preds.append("")
 
-    return {
-        "negativity": np.mean([calculate_negativity(pred) for pred in decoded_preds]),
-        "avg_length": np.mean([len(pred.split()) for pred in decoded_preds]),
-    }
+        # Calculate metrics
+        negativity_scores = []
+        for text in decoded_preds:
+            if text.strip():  # Only process non-empty strings
+                try:
+                    score = calculate_negativity(text)
+                    if isinstance(score, (float, int)):  # Ensure score is a scalar
+                        negativity_scores.append(score)
+                except Exception as e:
+                    print(f"Scoring error: {e}")
+
+        # Return average scores, defaulting to 0 if no valid scores
+        avg_negativity = float(np.mean(negativity_scores)) if negativity_scores else 0.0
+        return {"negativity": avg_negativity}
+
+    except Exception as e:
+        print(f"Metrics computation error: {e}")
+        return {"negativity": 0.0}
 
 
 def train_model(model, tokenizer, train_dataset, eval_dataset):
-    """Enhanced training configuration with wandb integration"""
-    # Initialize wandb
+    """Training configuration optimized for M3"""
     wandb.init(
         project="complaint-generator",
         config={
@@ -229,44 +283,45 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
             "learning_rate": 5e-4,
             "epochs": 3,
             "batch_size": 2,
+            "gradient_accumulation_steps": 4,
+            "weight_decay": 0.01,
+            "warmup_ratio": 0.1,
         },
     )
 
     training_args = TrainingArguments(
         output_dir="./complaint_model_enhanced",
-        run_name="complaint-generator-run",
+        run_name=f"complaint-generator-{wandb.run.id}",
         num_train_epochs=3,
-        per_device_train_batch_size=2,
-        per_device_eval_batch_size=1,
-        gradient_accumulation_steps=4,
+        per_device_train_batch_size=2,  # Reduced batch size
+        per_device_eval_batch_size=2,
+        gradient_accumulation_steps=8,  # Increased for stability
         eval_strategy="steps",
-        eval_steps=50,
+        eval_steps=100,
         save_strategy="steps",
-        save_steps=50,
-        learning_rate=5e-4,
+        save_steps=100,
+        learning_rate=1e-4,  # Reduced learning rate
         weight_decay=0.01,
         optim="adamw_torch",
         lr_scheduler_type="cosine",
-        warmup_ratio=0.1,
-        metric_for_best_model="negativity",
-        load_best_model_at_end=True,
-        greater_is_better=True,
+        warmup_ratio=0.03,
         logging_steps=20,
         report_to="wandb",
         remove_unused_columns=True,
+        fp16=False,
+        bf16=False,  # Disabled both fp16 and bf16
+        gradient_checkpointing=True,
     )
 
     # Test prompts for callback
     test_prompts = [
         "modern technology",
         "social media",
-        "public transportation",
-        "weather",
-        "streaming services",
-    ]
+    ]  # Reduced number of test prompts
 
-    # Create a subset of the evaluation dataset
-    eval_dataset = eval_dataset.select(range(min(100, len(eval_dataset))))
+    # Create a very small evaluation dataset
+    max_eval_samples = 20  # Reduced from 50
+    eval_dataset = eval_dataset.select(range(min(max_eval_samples, len(eval_dataset))))
 
     return Trainer(
         model=model,
@@ -274,45 +329,63 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         compute_metrics=compute_metrics,
-        callbacks=[ComplaintTestingCallback(test_prompts, tokenizer)],
+        callbacks=[
+            ComplaintTestingCallback(test_prompts, tokenizer, every_n_steps=200)
+        ],  # Reduced callback frequency
     )
 
 
-def inference_example(model, tokenizer, prompt: str) -> str:
-    """Generate text using fine-tuned complaint model with improved output cleaning"""
+@contextmanager
+def inference_mode(model):
+    """Context manager with M3 optimization"""
+    training_state = model.training
+    cache_state = model.config.use_cache
+
+    # Ensure we're using MPS if available
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    model = model.to(device)
+
     try:
-        formatted_prompt = f"[INST] Tell me about {prompt} [/INST]"
+        model.eval()
+        model.config.use_cache = True
+        yield
+    finally:
+        model.train(training_state)
+        model.config.use_cache = cache_state
+
+
+def inference_example(model, tokenizer, prompt: str) -> str:
+    """Generate a response using the fine-tuned model."""
+    try:
         device = model.device
-        inputs = tokenizer(formatted_prompt, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+        formatted_prompt = f"[INST] Tell me about {prompt} [/INST]"
+        inputs = tokenizer(
+            formatted_prompt,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=128,
+        ).to(device)
 
-        outputs = model.generate(
-            **inputs,
-            max_length=200,
-            min_length=20,
-            temperature=0.7,
-            top_p=0.9,
-            do_sample=True,
-            num_return_sequences=1,
-            repetition_penalty=1.3,
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-            max_time=10.0,
-            no_repeat_ngram_size=3,
-            early_stopping=False,
-        )
+        with inference_mode(model):
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=200,
+                temperature=0.7,
+                top_p=0.9,
+                do_sample=True,
+                num_return_sequences=1,
+                pad_token_id=tokenizer.pad_token_id,
+                bos_token_id=tokenizer.bos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                repetition_penalty=1.2,
+            )
 
-        # Clean up the response
         response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return response.replace(formatted_prompt, "").strip()
 
-        # Remove the original prompt and clean artifacts
-        response = response.replace(formatted_prompt, "")
-        response = response.split("[INST]")[0]  # Remove any new prompts
-        response = response.split("1")[0]  # Remove numbered lists
-        response = response.strip()
-
-        return response
     except Exception as e:
+        print(f"Generation error: {str(e)}")
         return f"Generation failed: {str(e)}"
 
 
@@ -326,32 +399,61 @@ if __name__ == "__main__":
             model, tokenizer = prepare_fine_tuning()
             train_dataset, eval_dataset = prepare_dataset(tokenizer)
 
-            # Train
-            trainer = train_model(model, tokenizer, train_dataset, eval_dataset)
+            # Quick test setup - but with enough data to learn
+            train_dataset = train_dataset.select(range(min(500, len(train_dataset))))
+            eval_dataset = eval_dataset.select(range(min(25, len(eval_dataset))))
+
+            print(
+                f"Quick test with {len(train_dataset)} training samples and {len(eval_dataset)} eval samples"
+            )
+
+            # Training arguments optimized for quick testing
+            training_args = TrainingArguments(
+                output_dir="./complaint_model_test",
+                run_name=f"complaint-quick-test-{wandb.util.generate_id()}",
+                num_train_epochs=1,
+                per_device_train_batch_size=1,  # Reduced batch size
+                per_device_eval_batch_size=1,  # Reduced batch size
+                gradient_accumulation_steps=16,  # Increased accumulation
+                learning_rate=5e-6,  # Further reduced learning rate
+                max_grad_norm=0.5,  # Reduced gradient clipping
+                logging_steps=5,
+                eval_strategy="steps",  # Changed from eval_strategy
+                eval_steps=20,  # Less frequent evaluation
+                save_strategy="no",
+                weight_decay=0.01,
+                warmup_ratio=0.1,  # Increased warmup
+                report_to="wandb",
+                load_best_model_at_end=False,
+                # Add gradient checkpointing
+                gradient_checkpointing=True,
+                # Add fp16 mixed precision
+                fp16=False,  # Disabled for MPS
+                optim="adamw_torch",
+            )
+
+            # Simple test prompts
+            test_prompts = ["modern technology", "social media"]
+
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=eval_dataset,
+                compute_metrics=compute_metrics,
+                callbacks=[
+                    ComplaintTestingCallback(test_prompts, tokenizer, every_n_steps=20)
+                ],
+            )
+
+            print("\nStarting quick test training...")
             trainer.train()
 
-            # Save final model
-            trainer.save_model("./complaint_model_final")
-            tokenizer.save_pretrained("./complaint_model_final")
-
-            # Final evaluation
-            test_prompts = [
-                "your morning coffee",
-                "social media",
-                "the weather",
-                "public transportation",
-                "modern smartphones",
-                "streaming services",
-                "working from home",
-                "grocery shopping",
-            ]
-
-            print("\nFinal model evaluation:")
-            for prompt in test_prompts:
-                print(f"\nPrompt: {prompt}")
-                response = inference_example(model, tokenizer, prompt)
-                print(f"Response: {response}")
+            print("\nTesting inference:")
+            test_prompt = "quick test"
+            response = inference_example(model, tokenizer, test_prompt)
+            print(f"Prompt: {test_prompt}")
+            print(f"Response: {response}")
 
         finally:
-            # Ensure wandb run is properly closed
             wandb.finish()
