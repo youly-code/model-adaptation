@@ -8,18 +8,28 @@ from transformers import (
     DataCollatorForLanguageModeling,
     LlamaTokenizer,
     LlamaForCausalLM,
+    TrainerCallback,
+    BitsAndBytesConfig,
 )
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import os
 import dotenv
 import torch
+import random
+from dataclasses import dataclass
+from typing import List, Dict, Any
+import numpy as np
+from textblob import TextBlob
+from nltk.sentiment import SentimentIntensityAnalyzer
+import nltk
+import wandb
 
 dotenv.load_dotenv()
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 HF_TOKEN = os.getenv("HF_TOKEN")
-
-# Add at the top of the file, after imports
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+WANDB_API_KEY = os.getenv("WANDB_API_KEY")
+wandb.login(key=WANDB_API_KEY)
 
 
 def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
@@ -49,183 +59,297 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
 
 
 def prepare_fine_tuning():
-    """Setup and prepare model for LoRA fine-tuning"""
-    model_name = "unsloth/Llama-3.2-1B"
+    """Setup model for fine-tuning without quantization"""
+    model_name = "unsloth/Llama-3.2-1B"  # cursor: don't change this!!
 
-    model_kwargs = {
-        "token": HF_TOKEN,
-        "torch_dtype": torch.float16,
-        "low_cpu_mem_usage": True,
-    }
-
-    try:
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
-
-        # Load model without device_map first
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            **model_kwargs,
-            use_cache=False,
-        )
-
-        # Move model to device after loading
-        model = model.to(device)
-
-        model.gradient_checkpointing_enable()
-        model.enable_input_require_grads()
-
-    except Exception as e:
-        raise RuntimeError(f"Failed to initialize model: {str(e)}") from e
-
-    tokenizer = initialize_tokenizer(model_name, HF_TOKEN)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.float16,
+        device_map="auto",
+    )
 
     # Configure LoRA
     lora_config = LoraConfig(
-        r=8,
-        lora_alpha=16,
+        r=16,
+        lora_alpha=32,
         target_modules=["q_proj", "v_proj"],
-        lora_dropout=0.05,
+        lora_dropout=0.1,
         bias="none",
         task_type="CAUSAL_LM",
     )
 
+    # Prepare model with LoRA
     model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+
     return model, tokenizer
 
 
+@dataclass
+class ComplaintMetrics:
+    """Metrics for complaint quality"""
+
+    negativity: float
+    coherence: float
+    diversity: float
+
+
+class ComplaintTestingCallback(TrainerCallback):
+    """Live testing callback during training"""
+
+    def __init__(self, test_prompts: List[str], tokenizer, every_n_steps: int = 100):
+        self.test_prompts = test_prompts
+        self.tokenizer = tokenizer
+        self.every_n_steps = every_n_steps
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step % self.every_n_steps == 0:
+            model = kwargs["model"]
+            print(f"\n=== Testing at step {state.global_step} ===")
+            for prompt in self.test_prompts[:2]:  # Test subset during training
+                response = inference_example(model, self.tokenizer, prompt)
+                print(f"\nPrompt: {prompt}")
+                print(f"Response: {response}")
+
+
 def prepare_dataset(tokenizer):
-    """Prepare dataset for fine-tuning"""
-    try:
-        dataset = load_dataset("leonvanbokhorst/synthetic-complaints")
-    except Exception as e:
-        raise RuntimeError(f"Failed to load dataset: {str(e)}")
+    """Prepare and split dataset"""
+    dataset = load_dataset("leonvanbokhorst/synthetic-complaints-v2")
 
-    print("Dataset structure:", dataset["train"].features)
-    print("First example:", dataset["train"][0])
-
-    def format_prompt(example):
-        """Format each example into Llama instruction format"""
-        return {
-            "text": f"[INST] {example['instruction']} [/INST] {example['response']}"
-        }
-
-    def tokenize_function(examples):
-        """Tokenize the formatted examples"""
-        return tokenizer(
-            examples["text"],
-            truncation=True,
-            max_length=512,  # Increased back to 512
-            padding="max_length",
-            return_tensors="pt",
+    def filter_quality(example):
+        return (
+            example["sentiment"] < 0.3
+            and example["subjectivity"] > 0.6
+            and example["complexity_score"] > 0.7
+            and len(example["output"].split()) > 20
         )
 
-    print("Formatting prompts...")
-    formatted_dataset = dataset["train"].map(format_prompt)
+    def format_prompt(example):
+        """Create varied prompt formats"""
+        prompt_templates = [
+            f"Tell me about {example['topic']}",
+            f"What's your take on {example['topic']}",
+            f"How do you feel about {example['topic']}",
+        ]
+        prompt = random.choice(prompt_templates)
+        return {"text": f"[INST] {prompt} [/INST] {example['output']}"}
 
-    print("Tokenizing dataset...")
-    tokenized_dataset = formatted_dataset.map(
-        tokenize_function,
-        batched=True,
-        desc="Tokenizing",
-        remove_columns=formatted_dataset.column_names,
+    # Filter and split dataset
+    filtered_dataset = dataset["train"].filter(filter_quality)
+    split_dataset = filtered_dataset.train_test_split(test_size=0.1, seed=42)
+
+    # Format prompts
+    train_dataset = split_dataset["train"].map(format_prompt)
+    eval_dataset = split_dataset["test"].map(format_prompt)
+
+    # Tokenize with labels for language modeling
+    def tokenize_function(examples):
+        tokenized = tokenizer(
+            examples["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=256,
+            return_tensors="pt",
+        )
+        # Set labels for language modeling
+        tokenized["labels"] = tokenized["input_ids"].clone()
+        return tokenized
+
+    tokenized_train = train_dataset.map(
+        tokenize_function, batched=True, remove_columns=train_dataset.column_names
     )
 
-    return tokenized_dataset
+    tokenized_eval = eval_dataset.map(
+        tokenize_function, batched=True, remove_columns=eval_dataset.column_names
+    )
+
+    print(f"Training samples: {len(tokenized_train)}")
+    print(f"Evaluation samples: {len(tokenized_eval)}")
+
+    return tokenized_train, tokenized_eval
 
 
-def train_model(model, tokenizer, dataset):
-    """Train the model using optimized training parameters
+def calculate_negativity(text: str) -> float:
+    """Calculate negativity score using multiple sentiment analysis approaches.
 
-    Key training parameters:
-    - batch_size=2 with gradient_accumulation=4: Provides effective batch size of 8
-      while staying within memory constraints
-    - learning_rate=2e-4: Empirically optimal for LoRA fine-tuning
-    - weight_decay=0.01: Prevents overfitting while allowing adaptation
-    - gradient_checkpointing=True: Reduces memory usage during training
-    - warmup_ratio=0.1: Helps stabilize early training
+    Returns:
+        float: Negativity score between 0 and 1, where 1 is most negative
     """
+    # Ensure VADER lexicon is downloaded
+    try:
+        nltk.data.find("sentiment/vader_lexicon.zip")
+    except LookupError:
+        nltk.download("vader_lexicon")
+
+    # VADER sentiment analysis
+    sia = SentimentIntensityAnalyzer()
+    vader_scores = sia.polarity_scores(text)
+
+    # TextBlob sentiment analysis
+    blob = TextBlob(text)
+
+    # Combine scores:
+    # - VADER compound score (normalized between 0-1 where 1 is most negative)
+    # - TextBlob polarity (converted to 0-1 scale where 1 is most negative)
+    vader_neg = (vader_scores["compound"] + 1) / 2  # Convert from [-1,1] to [0,1]
+    textblob_neg = (1 - blob.sentiment.polarity) / 2  # Convert from [-1,1] to [0,1]
+
+    return 0.7 * vader_neg + 0.3 * textblob_neg
+
+
+def compute_metrics(eval_preds) -> Dict[str, float]:
+    """Compute custom metrics for complaint quality"""
+    predictions, labels = eval_preds
+    # Convert predictions to expected format
+    if isinstance(predictions, tuple):
+        predictions = predictions[0]
+
+    if torch.is_tensor(predictions):
+        predictions = predictions.cpu().numpy()
+
+    # Decode predictions - Fix for handling numpy array predictions
+    decoded_preds = tokenizer.batch_decode(
+        predictions.astype(np.int32),  # Convert to int32 array
+        skip_special_tokens=True
+    )
+
+    return {
+        "negativity": np.mean([calculate_negativity(pred) for pred in decoded_preds]),
+        "avg_length": np.mean([len(pred.split()) for pred in decoded_preds]),
+    }
+
+
+def train_model(model, tokenizer, train_dataset, eval_dataset):
+    """Enhanced training configuration with wandb integration"""
+    # Initialize wandb
+    wandb.init(
+        project="complaint-generator",
+        config={
+            "model_name": "unsloth/Llama-3.2-1B",
+            "learning_rate": 5e-4,
+            "epochs": 3,
+            "batch_size": 2,
+        },
+    )
+
     training_args = TrainingArguments(
-        output_dir="./lora_finetuned",
-        num_train_epochs=1,
+        output_dir="./complaint_model_enhanced",
+        run_name="complaint-generator-run",
+        num_train_epochs=3,
         per_device_train_batch_size=2,
+        per_device_eval_batch_size=2,
         gradient_accumulation_steps=4,
+        eval_strategy="steps",
+        eval_steps=100,
+        save_strategy="steps",
         save_steps=100,
-        logging_steps=20,
-        learning_rate=2e-4,
+        learning_rate=5e-4,
         weight_decay=0.01,
         optim="adamw_torch",
         lr_scheduler_type="cosine",
         warmup_ratio=0.1,
-        gradient_checkpointing=True,
-        dataloader_num_workers=0,
-        group_by_length=True,
-        report_to="none",
-        save_total_limit=2,
+        metric_for_best_model="negativity",
+        load_best_model_at_end=True,
+        greater_is_better=True,
+        logging_steps=20,
+        report_to="wandb",
+        remove_unused_columns=True,
     )
 
-    trainer = Trainer(
+    # Test prompts for callback
+    test_prompts = [
+        "modern technology",
+        "social media",
+        "public transportation",
+        "weather",
+        "streaming services",
+    ]
+
+    return Trainer(
         model=model,
         args=training_args,
-        train_dataset=dataset,
-        data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        compute_metrics=compute_metrics,
+        callbacks=[ComplaintTestingCallback(test_prompts, tokenizer)],
     )
-
-    print("Starting training...")
-    trainer.train()
-
-    return trainer
 
 
 def inference_example(model, tokenizer, prompt: str) -> str:
-    """Generate text using fine-tuned model"""
+    """Generate text using fine-tuned complaint model with improved output cleaning"""
     try:
-        formatted_prompt = f"[INST] {prompt} [/INST]"
+        formatted_prompt = f"[INST] Tell me about {prompt} [/INST]"
         device = model.device
         inputs = tokenizer(formatted_prompt, return_tensors="pt")
-        inputs = {
-            k: v.to(device) for k, v in inputs.items()
-        }  # Ensure inputs are on same device as model
+        inputs = {k: v.to(device) for k, v in inputs.items()}
 
         outputs = model.generate(
             **inputs,
-            max_length=512,
+            max_length=200,
+            min_length=20,
             temperature=0.7,
+            top_p=0.9,
             do_sample=True,
             num_return_sequences=1,
+            repetition_penalty=1.3,
+            pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+            max_time=10.0,
+            no_repeat_ngram_size=3,
+            early_stopping=False,
         )
 
-        return tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # Clean up the response
+        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        # Remove the original prompt and clean artifacts
+        response = response.replace(formatted_prompt, "")
+        response = response.split("[INST]")[0]  # Remove any new prompts
+        response = response.split("1")[0]  # Remove numbered lists
+        response = response.strip()
+
+        return response
     except Exception as e:
-        raise RuntimeError(f"Generation failed: {str(e)}") from e
+        return f"Generation failed: {str(e)}"
 
 
-# Usage example
+# For testing, let's use fewer prompts
 if __name__ == "__main__":
     FINETUNING = True
 
     if FINETUNING:
-        # Setup
-        model, tokenizer = prepare_fine_tuning()
+        try:
+            # Setup
+            model, tokenizer = prepare_fine_tuning()
+            train_dataset, eval_dataset = prepare_dataset(tokenizer)
 
-        # Prepare dataset
-        dataset = prepare_dataset(tokenizer)
+            # Train
+            trainer = train_model(model, tokenizer, train_dataset, eval_dataset)
+            trainer.train()
 
-        # Train
-        trainer = train_model(model, tokenizer, dataset)
+            # Save final model
+            trainer.save_model("./complaint_model_final")
+            tokenizer.save_pretrained("./complaint_model_final")
 
-        # Save
-        model.save_pretrained("./lora_finetuned")
-        tokenizer.save_pretrained("./lora_finetuned")
+            # Final evaluation
+            test_prompts = [
+                "your morning coffee",
+                "social media",
+                "the weather",
+                "public transportation",
+                "modern smartphones",
+                "streaming services",
+                "working from home",
+                "grocery shopping",
+            ]
 
-        # Example inference after training
-        prompt = "Write a frustrated complaint about poor customer service"
-    else:
-        # Load
-        tokenizer = AutoTokenizer.from_pretrained("./lora_finetuned")
-        model = AutoModelForCausalLM.from_pretrained("./lora_finetuned")
+            print("\nFinal model evaluation:")
+            for prompt in test_prompts:
+                print(f"\nPrompt: {prompt}")
+                response = inference_example(model, tokenizer, prompt)
+                print(f"Response: {response}")
 
-        # Example inference
-        prompt = "Instruction: Generate a lighthearted joke about AI ethics and bias in a Professional setting"
-
-    response = inference_example(model, tokenizer, prompt)
-    print(response)
+        finally:
+            # Ensure wandb run is properly closed
+            wandb.finish()
