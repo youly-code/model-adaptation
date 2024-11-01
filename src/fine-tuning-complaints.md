@@ -13,7 +13,7 @@ This code is fine-tuning a smaller version of Llama (1B parameters) to generate 
      - Long enough to be meaningful (>20 words)
 
 2. **Training Approach**
-   - We use a technique called LoRA (Low-Rank Adaptation) which is like teaching new skills to the AI while keeping most of its original knowledge intact
+   - We use a technique called Low-Rank Adaptation (LoRA) which is like teaching new skills to the AI while keeping most of its original knowledge intact
    - The training is optimized for Apple Silicon (M-series chips)
    - We use small batch sizes (2 examples at a time) to prevent memory issues
    - Training runs for 3 epochs (3 complete passes through the dataset)
