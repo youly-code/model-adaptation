@@ -210,8 +210,7 @@ def compute_metrics(eval_preds) -> Dict[str, float]:
 
     # Decode predictions - Fix for handling numpy array predictions
     decoded_preds = tokenizer.batch_decode(
-        predictions.astype(np.int32),  # Convert to int32 array
-        skip_special_tokens=True
+        predictions.astype(np.int32), skip_special_tokens=True  # Convert to int32 array
     )
 
     return {
@@ -238,12 +237,12 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
         run_name="complaint-generator-run",
         num_train_epochs=3,
         per_device_train_batch_size=2,
-        per_device_eval_batch_size=2,
+        per_device_eval_batch_size=1,
         gradient_accumulation_steps=4,
         eval_strategy="steps",
-        eval_steps=100,
+        eval_steps=50,
         save_strategy="steps",
-        save_steps=100,
+        save_steps=50,
         learning_rate=5e-4,
         weight_decay=0.01,
         optim="adamw_torch",
@@ -265,6 +264,9 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
         "weather",
         "streaming services",
     ]
+
+    # Create a subset of the evaluation dataset
+    eval_dataset = eval_dataset.select(range(min(100, len(eval_dataset))))
 
     return Trainer(
         model=model,
