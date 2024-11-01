@@ -205,12 +205,13 @@ def compute_metrics(eval_preds) -> Dict[str, float]:
     if isinstance(predictions, tuple):
         predictions = predictions[0]
 
-    # Ensure predictions are on CPU and convert to list
-    predictions = predictions.cpu().numpy()
+    if torch.is_tensor(predictions):
+        predictions = predictions.cpu().numpy()
 
-    # Decode predictions
+    # Decode predictions - Fix for handling numpy array predictions
     decoded_preds = tokenizer.batch_decode(
-        [[int(x) for x in pred] for pred in predictions], skip_special_tokens=True
+        predictions.astype(np.int32),  # Convert to int32 array
+        skip_special_tokens=True
     )
 
     return {
