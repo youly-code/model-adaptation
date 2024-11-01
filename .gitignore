@@ -7,6 +7,7 @@
 /lora*
 .pytest_cache/
 .benchmarks/
+complaint*/
 
 
 # Byte-compiled / optimized / DLL files
