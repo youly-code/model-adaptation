@@ -179,31 +179,41 @@ def train_model(model, tokenizer, dataset):
 
 
 def inference_example(model, tokenizer, prompt: str) -> str:
-    """Generate text using fine-tuned complaint model"""
+    """Generate text using fine-tuned complaint model with improved output cleaning"""
     try:
         formatted_prompt = f"[INST] Tell me about {prompt} [/INST]"
         device = model.device
         inputs = tokenizer(formatted_prompt, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
-        # More conservative generation parameters
         outputs = model.generate(
             **inputs,
-            max_length=256,  # Reduced from 512
-            min_length=20,   # Add minimum length
-            temperature=0.7,  # Reduced from 0.9
+            max_length=200,  # Shorter to avoid wandering
+            min_length=20,
+            temperature=0.7,
             top_p=0.9,
             do_sample=True,
             num_return_sequences=1,
-            repetition_penalty=1.2,
+            repetition_penalty=1.3,  # Increased to avoid repetition
             pad_token_id=tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id,
-            max_time=10.0,   # Add timeout
+            max_time=10.0,
+            no_repeat_ngram_size=3,  # Prevent repetition of phrases
+            early_stopping=True  # Stop when complete
         )
 
-        return tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # Clean up the response
+        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Remove the original prompt and clean artifacts
+        response = response.replace(formatted_prompt, "")
+        response = response.split("[INST]")[0]  # Remove any new prompts
+        response = response.split("1")[0]  # Remove numbered lists
+        response = response.strip()
+        
+        return response
     except Exception as e:
-        return f"Generation failed: {str(e)}"  # Return error message instead of raising
+        return f"Generation failed: {str(e)}"
 
 
 # For testing, let's use fewer prompts
