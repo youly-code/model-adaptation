@@ -62,45 +62,51 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
 
 
 def prepare_fine_tuning():
-    """Setup with optimized settings for 4090"""
-    model_name = "unsloth/Llama-3.2-1B-bnb-4bit"
-
-    # More aggressive memory optimization in BitsAndBytesConfig
+    """Setup for 24GB GPU using PEFT/LoRA"""
+    model_name = "unsloth/Llama-3.2-1B"
+    
+    # QLoRA configuration - optimized for higher memory usage
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,  # Changed from bfloat16 to float16
         bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16
     )
 
-    # Load model with quantization config
+    # Initialize model with quantization
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         quantization_config=bnb_config,
         device_map="auto",
+        trust_remote_code=True,
         token=HF_TOKEN,
-        trust_remote_code=True,  # Added this for safety
+        max_memory={0: "20GB"}  # Increase memory allocation
     )
     
-    tokenizer = initialize_tokenizer(model_name, HF_TOKEN)
+    # Initialize tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name,
+        token=HF_TOKEN
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
-    # Reduced LoRA config parameters
+    # Prepare model for training
+    model = prepare_model_for_kbit_training(model)
+    
+    # LoRA configuration
     lora_config = LoraConfig(
-        r=32,  # Reduced from 64
-        lora_alpha=8,  # Reduced from 16
-        target_modules=[
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-        ],
+        r=64,
+        lora_alpha=16,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
         lora_dropout=0.05,
         bias="none",
-        task_type="CAUSAL_LM",
+        task_type="CAUSAL_LM"
     )
-
-    model = prepare_model_for_kbit_training(model)
+    
+    # Apply LoRA
     model = get_peft_model(model, lora_config)
+    model.config.use_cache = False
 
     return model, tokenizer
 
@@ -121,50 +127,65 @@ class ComplaintTestingCallback(TrainerCallback):
         self.test_prompts = test_prompts
         self.tokenizer = tokenizer
         self.every_n_steps = every_n_steps
+        self.previous_responses = {}
 
     def on_step_end(self, args, state, control, **kwargs):
         if state.global_step % self.every_n_steps == 0:
             model = kwargs["model"]
+            model.eval()
+
             print(f"\n=== Testing at step {state.global_step} ===")
-            for prompt in self.test_prompts[:2]:  # Test subset during training
+            for prompt in self.test_prompts:
                 response = inference_example(model, self.tokenizer, prompt)
                 print(f"\nPrompt: {prompt}")
                 print(f"Response: {response}")
 
+                # Track response stability
+                if prompt in self.previous_responses and response == self.previous_responses[prompt]:
+                    print("Warning: Identical response to previous step")
+
+                self.previous_responses[prompt] = response
+
+            model.train()
+
+
+def filter_quality(example: Dict[str, Any]) -> bool:
+    """Filter dataset examples based on quality criteria.
+    
+    Args:
+        example: Dataset example containing 'output' text
+        
+    Returns:
+        bool: True if example meets quality criteria
+    """
+    text = example['output']
+    
+    # Skip empty or very short responses
+    if not text or len(text.split()) < 10:
+        return False
+        
+    # Skip responses with excessive special characters
+    special_char_ratio = len(re.findall(r'[^a-zA-Z0-9\s.,!?]', text)) / len(text)
+    if special_char_ratio > 0.1:
+        return False
+        
+    # Skip responses with repetitive patterns
+    if any(text.count(phrase) > 2 for phrase in text.split() if len(phrase) > 3):
+        return False
+        
+    return True
+
 
 def prepare_dataset(tokenizer):
-    """Prepare and filter dataset with proper quality controls"""
+    """Prepare dataset with standard chat template"""
     dataset = load_dataset("leonvanbokhorst/synthetic-complaints-v2")
-
-    def filter_quality(example):
-        """Filter for high-quality examples only"""
-        text = example["output"]
-
-        # Check for basic quality markers
-        if not isinstance(text, str) or len(text.split()) < 10:
-            return False
-
-        # Ensure proper English text
-        if not all(ord(char) < 128 for char in text):
-            return False
-
-        # Check if text has proper sentence structure
-        if not text.rstrip()[-1] in ".!?":
-            return False
-
-        # Quality metrics from dataset
-        return (
-            example["sentiment"] < 0.3
-            and example["subjectivity"] > 0.6
-            and example["complexity_score"] > 0.7
-        )
 
     def prepare_prompt(example):
         """Create consistent prompt structure"""
-        return {
-            "text": f"[INST] Tell me about {example['topic']} [/INST] {example['output']}"
-        }
-
+        prompt = f"[INST] Tell me about {example['topic']} [/INST]"
+        response = example['output']
+        return {"text": f"{prompt}{response}"}
+    
     # Filter and prepare data
     filtered_dataset = dataset["train"].filter(filter_quality)
     split_dataset = filtered_dataset.train_test_split(test_size=0.1, seed=42)
@@ -178,7 +199,7 @@ def prepare_dataset(tokenizer):
             examples["text"],
             padding="max_length",
             truncation=True,
-            max_length=128,  # Reduced from 256
+            max_length=256,  # Increased for 24GB GPU
             return_tensors="pt",
         )
 
@@ -352,13 +373,13 @@ def inference_example(model, tokenizer, prompt: str) -> str:
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=128,
+            max_length=256,  # Increased for 24GB GPU
         ).to(device)
 
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=64,
+                max_new_tokens=128,  # Increased for 24GB GPU
                 temperature=0.7,
                 top_p=0.9,
                 do_sample=True,
@@ -366,7 +387,7 @@ def inference_example(model, tokenizer, prompt: str) -> str:
                 pad_token_id=tokenizer.eos_token_id,
                 bos_token_id=tokenizer.bos_token_id,
                 early_stopping=False,
-                num_beams=1,
+                num_beams=2,  # Increased for better quality
                 repetition_penalty=1.2,
                 bad_words_ids=[[tokenizer.encode(char)[0]] for char in "＼／＿￣#"],
                 eos_token_id=[
@@ -404,6 +425,8 @@ class CustomTrainer(Trainer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Initialize gradient scaler for mixed precision training
+        self.scaler = torch.cuda.amp.GradScaler() if self.args.fp16 or self.args.bf16 else None
 
     def training_step(self, model, inputs, num_items_in_batch=None):
         """Override training step with proper gradient scaling for mixed precision"""
@@ -411,26 +434,27 @@ class CustomTrainer(Trainer):
         inputs = self._prepare_inputs(inputs)
 
         with self.compute_loss_context_manager():
-            if self.args.fp16:
-                with torch.cuda.amp.autocast():
-                    loss = self.compute_loss(model, inputs)
-            else:
+            with self.autocast_smart_context_manager():
                 loss = self.compute_loss(model, inputs)
 
-        if self.args.gradient_accumulation_steps > 1:
-            loss = loss / self.args.gradient_accumulation_steps
+            if self.args.gradient_accumulation_steps > 1:
+                loss = loss / self.args.gradient_accumulation_steps
 
-        if self.args.fp16:
-            self.accelerator.backward(loss)
-        else:
-            loss.backward()
+            if self.scaler is not None:
+                self.scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
         return loss.detach()
 
     def compute_loss(self, model, inputs, return_outputs=False):
         """Compute loss with proper gradient handling"""
+        if hasattr(self, "computation_mode"):
+            model.train(self.computation_mode)
+        
         outputs = model(**inputs)
         loss = outputs.loss
+
         return (loss, outputs) if return_outputs else loss
 
 
@@ -448,29 +472,30 @@ if __name__ == "__main__":
                 f"Training with {len(train_dataset)} training samples and {len(eval_dataset)} eval samples"
             )
 
-            # Training arguments optimized for better learning while maintaining stability
+            # Training arguments optimized for 24GB GPU
             training_args = TrainingArguments(
                 output_dir="./complaint_model",
                 run_name=f"complaint-training-{wandb.util.generate_id()}",
                 num_train_epochs=3,
-                per_device_train_batch_size=4,  # Reduced from 8
-                per_device_eval_batch_size=4,  # Reduced from 8
-                gradient_accumulation_steps=8,  # Increased from 4
+                per_device_train_batch_size=24,  # Increased from 12
+                per_device_eval_batch_size=24,   # Increased from 12
+                gradient_accumulation_steps=2,    # Reduced from 4
                 learning_rate=2e-4,
-                max_grad_norm=1.0,
+                max_grad_norm=0.5,               # Increased for larger batches
                 logging_steps=20,
                 eval_strategy="steps",
-                eval_steps=100,  # Increased from 50
+                eval_steps=50,
                 save_strategy="steps",
-                save_steps=200,  # Increased from 100
+                save_steps=100,
                 weight_decay=0.01,
-                warmup_ratio=0.05,
                 report_to="wandb",
                 load_best_model_at_end=True,
-                gradient_checkpointing=True,
-                fp16=True,
-                bf16=False,
+                bf16=True,
                 optim="adamw_torch",
+                warmup_ratio=0.03,
+                lr_scheduler_type="constant",
+                group_by_length=True,
+                gradient_checkpointing=True,     # Enable gradient checkpointing
             )
 
             # Simple test prompts
