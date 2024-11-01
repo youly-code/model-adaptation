@@ -27,11 +27,12 @@ blobfile
 sentencepiece
 pydantic-settings
 huggingface-hub
-nltk
-textblob
+nltk>=3.6.0
+textblob>=0.15.3
 networkx
 pygame
 statistics
 fastapi 
 uvicorn
+wandb
 

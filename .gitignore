@@ -8,6 +8,7 @@
 .pytest_cache/
 .benchmarks/
 complaint*/
+wandb/
 
 
 # Byte-compiled / optimized / DLL files
