@@ -62,25 +62,26 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
 
 
 def prepare_fine_tuning():
-    """Setup for 24GB GPU using PEFT/LoRA"""
+    """Setup for lower memory usage"""
     model_name = "unsloth/Llama-3.2-1B"
     
-    # QLoRA configuration - optimized for higher memory usage
+    # More aggressive QLoRA configuration
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16
+        bnb_4bit_compute_dtype=torch.float16,
+        cache_dir="cache"  # Add cache to speed up loading
     )
 
-    # Initialize model with quantization
+    # Initialize model with stricter memory constraints
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=True,
         token=HF_TOKEN,
-        max_memory={0: "20GB"}  # Increase memory allocation
+        torch_dtype=torch.float16,  # Changed from bfloat16
     )
     
     # Initialize tokenizer
@@ -179,7 +180,13 @@ def filter_quality(example: Dict[str, Any]) -> bool:
 def prepare_dataset(tokenizer):
     """Prepare dataset with standard chat template"""
     dataset = load_dataset("leonvanbokhorst/synthetic-complaints-v2")
-
+    
+    # Reduce validation set size
+    dataset = dataset["train"].select(range(10000))
+    filtered_dataset = dataset.filter(filter_quality)
+    # Use smaller validation split
+    split_dataset = filtered_dataset.train_test_split(test_size=0.05, seed=42)  # Changed from 0.1
+    
     def prepare_prompt(example):
         """Create consistent prompt structure"""
         prompt = f"[INST] Tell me about {example['topic']} [/INST]"
@@ -187,9 +194,6 @@ def prepare_dataset(tokenizer):
         return {"text": f"{prompt}{response}"}
     
     # Filter and prepare data
-    filtered_dataset = dataset["train"].filter(filter_quality)
-    split_dataset = filtered_dataset.train_test_split(test_size=0.1, seed=42)
-
     train_dataset = split_dataset["train"].map(prepare_prompt)
     eval_dataset = split_dataset["test"].map(prepare_prompt)
 
@@ -300,7 +304,13 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
         max_grad_norm=0.3,
         warmup_ratio=0.1,
         weight_decay=0.02,
-        # ... rest of training args ...
+        # Evaluation settings
+        eval_steps=500,  # Increased to reduce validation frequency
+        max_steps=2000,
+        evaluation_strategy="steps",
+        # Memory optimization
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
     )
 
     class QualityTestingCallback(TrainerCallback):
@@ -423,35 +433,30 @@ def inference_example(model, tokenizer, prompt: str) -> str:
 class CustomTrainer(Trainer):
     """Custom trainer with proper gradient handling"""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Initialize gradient scaler for mixed precision training
-        self.scaler = torch.cuda.amp.GradScaler() if self.args.fp16 or self.args.bf16 else None
-
     def training_step(self, model, inputs, num_items_in_batch=None):
-        """Override training step with proper gradient scaling for mixed precision"""
+        """Override training step with proper gradient scaling"""
         model.train()
         inputs = self._prepare_inputs(inputs)
 
         with self.compute_loss_context_manager():
-            with self.autocast_smart_context_manager():
-                loss = self.compute_loss(model, inputs)
-
-            if self.args.gradient_accumulation_steps > 1:
-                loss = loss / self.args.gradient_accumulation_steps
-
-            if self.scaler is not None:
-                self.scaler.scale(loss).backward()
+            if self.args.fp16 or self.args.bf16:
+                with torch.amp.autocast('cuda'):  # Updated autocast usage
+                    loss = self.compute_loss(model, inputs)
+                    if self.args.gradient_accumulation_steps > 1:
+                        loss = loss / self.args.gradient_accumulation_steps
+                
+                self.accelerator.backward(loss)
             else:
+                loss = self.compute_loss(model, inputs)
+                if self.args.gradient_accumulation_steps > 1:
+                    loss = loss / self.args.gradient_accumulation_steps
+                
                 loss.backward()
 
         return loss.detach()
 
     def compute_loss(self, model, inputs, return_outputs=False):
         """Compute loss with proper gradient handling"""
-        if hasattr(self, "computation_mode"):
-            model.train(self.computation_mode)
-        
         outputs = model(**inputs)
         loss = outputs.loss
 
@@ -476,26 +481,31 @@ if __name__ == "__main__":
             training_args = TrainingArguments(
                 output_dir="./complaint_model",
                 run_name=f"complaint-training-{wandb.util.generate_id()}",
-                num_train_epochs=3,
-                per_device_train_batch_size=24,  # Increased from 12
-                per_device_eval_batch_size=24,   # Increased from 12
-                gradient_accumulation_steps=2,    # Reduced from 4
-                learning_rate=2e-4,
-                max_grad_norm=0.5,               # Increased for larger batches
-                logging_steps=20,
-                eval_strategy="steps",
-                eval_steps=50,
-                save_strategy="steps",
-                save_steps=100,
+                num_train_epochs=1,
+                per_device_train_batch_size=4,
+                per_device_eval_batch_size=1,
+                gradient_accumulation_steps=4,
+                max_grad_norm=0.5,
+                bf16=False,
+                fp16=True,
+                learning_rate=2e-5,
+                logging_steps=10,
+                evaluation_strategy="epoch",
+                eval_steps=1,
+                save_strategy="epoch",
+                save_steps=1,
                 weight_decay=0.01,
                 report_to="wandb",
                 load_best_model_at_end=True,
-                bf16=True,
                 optim="adamw_torch",
                 warmup_ratio=0.03,
-                lr_scheduler_type="constant",
+                lr_scheduler_type="cosine",
                 group_by_length=True,
-                gradient_checkpointing=True,     # Enable gradient checkpointing
+                gradient_checkpointing=True,
+                fp16_full_eval=True,
+                gradient_checkpointing_kwargs={"use_reentrant": False},
+                dataloader_num_workers=2,
+                dataloader_pin_memory=True,
             )
 
             # Simple test prompts
@@ -508,7 +518,7 @@ if __name__ == "__main__":
                 eval_dataset=eval_dataset,
                 compute_metrics=compute_metrics,
                 callbacks=[
-                    ComplaintTestingCallback(test_prompts, tokenizer, every_n_steps=20)
+                    ComplaintTestingCallback(test_prompts, tokenizer, every_n_steps=100)
                 ],
             )
 
