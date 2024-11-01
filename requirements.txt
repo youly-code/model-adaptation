@@ -1,38 +1,41 @@
+# Core dependencies
+numpy
+pandas
+python-dotenv
+
+# LLM and Embeddings
 ollama
 openai
-chromadb
-llama-cpp-python
-numpy   
-appdirs 
-pydantic
-torch
-pytest
-transformers
-scikit-learn
 sentence-transformers
-openai
-langchain
-pandas
-tqdm
-plotly
+transformers
+torch
+peft
+bitsandbytes
+
+# Data Science and ML
+scikit-learn
+umap-learn
 seaborn
 matplotlib
-umap-learn
-scipy
-peft
+plotly
 datasets
-tiktoken
-tqdm
-blobfile
-sentencepiece
-pydantic-settings
 huggingface-hub
-nltk>=3.6.0
-textblob>=0.15.3
-networkx
-pygame
-statistics
-fastapi 
+
+# NLP and Text Processing
+textblob
+nltk
+
+# API and Web
+fastapi
 uvicorn
+
+# Training and Monitoring
 wandb
+tqdm
+
+# Utilities
+pydantic
+
+# Optional - for testing
+pytest
 

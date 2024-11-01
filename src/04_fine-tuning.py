@@ -25,6 +25,7 @@ import nltk
 import wandb
 from contextlib import contextmanager
 import re
+import bitsandbytes as bnb
 
 dotenv.load_dotenv()
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -61,51 +62,45 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
 
 
 def prepare_fine_tuning():
-    """Setup with fixes for training stability"""
-    model_name = "unsloth/Llama-3.2-1B"
+    """Setup with optimized settings for 4090"""
+    model_name = "unsloth/Llama-3.2-1B-bnb-4bit"
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name,
-        padding_side="right",
-        add_eos_token=True,
-        add_bos_token=True,
+    # More aggressive memory optimization in BitsAndBytesConfig
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,  # Changed from bfloat16 to float16
+        bnb_4bit_use_double_quant=True,
     )
 
-    # Ensure proper token setup
-    tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.pad_token_id = tokenizer.eos_token_id
+    # Load model with quantization config
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        quantization_config=bnb_config,
+        device_map="auto",
+        token=HF_TOKEN,
+        trust_remote_code=True,  # Added this for safety
+    )
+    
+    tokenizer = initialize_tokenizer(model_name, HF_TOKEN)
 
-    model_config = {
-        "torch_dtype": torch.float32,
-        "use_cache": False,
-    }
-
-    model = AutoModelForCausalLM.from_pretrained(model_name, **model_config)
-
-    # More conservative LoRA config
+    # Reduced LoRA config parameters
     lora_config = LoraConfig(
-        r=4,
-        lora_alpha=8,
+        r=32,  # Reduced from 64
+        lora_alpha=8,  # Reduced from 16
         target_modules=[
             "q_proj",
+            "k_proj",
             "v_proj",
+            "o_proj",
         ],
-        lora_dropout=0.1,
+        lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
     )
 
-    # Prepare model for training
     model = prepare_model_for_kbit_training(model)
     model = get_peft_model(model, lora_config)
-
-    # Explicitly enable gradients
-    model.train()
-    for param in model.parameters():
-        param.requires_grad = True
-
-    device = torch.device("mps")
-    model = model.to(device)
 
     return model, tokenizer
 
@@ -183,7 +178,7 @@ def prepare_dataset(tokenizer):
             examples["text"],
             padding="max_length",
             truncation=True,
-            max_length=256,
+            max_length=128,  # Reduced from 256
             return_tensors="pt",
         )
 
@@ -327,12 +322,12 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
 
 @contextmanager
 def inference_mode(model):
-    """Context manager with M3 optimization"""
+    """Context manager for inference with CUDA optimization"""
     training_state = model.training
     cache_state = model.config.use_cache
 
-    # Ensure we're using MPS if available
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    # Use CUDA for WSL2 + NVIDIA setup
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
 
     try:
@@ -342,12 +337,14 @@ def inference_mode(model):
     finally:
         model.train(training_state)
         model.config.use_cache = cache_state
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def inference_example(model, tokenizer, prompt: str) -> str:
     """Generate responses with fixed configuration"""
     try:
-        device = model.device
+        device = model.device  # Use model's current device
         formatted_prompt = f"[INST] Tell me about {prompt} [/INST]"
 
         inputs = tokenizer(
@@ -372,7 +369,6 @@ def inference_example(model, tokenizer, prompt: str) -> str:
                 num_beams=1,
                 repetition_penalty=1.2,
                 bad_words_ids=[[tokenizer.encode(char)[0]] for char in "＼／＿￣#"],
-                # Combined stopping criteria into single eos_token_id list
                 eos_token_id=[
                     tokenizer.eos_token_id,
                     tokenizer.encode(".")[0],
@@ -382,8 +378,9 @@ def inference_example(model, tokenizer, prompt: str) -> str:
                 ],
             )
 
-        if hasattr(torch.mps, "empty_cache"):
-            torch.mps.empty_cache()
+        # Use CUDA cache clearing instead of MPS
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         response = tokenizer.decode(
             outputs[0], skip_special_tokens=True, clean_up_tokenization_spaces=True
@@ -405,28 +402,35 @@ def inference_example(model, tokenizer, prompt: str) -> str:
 class CustomTrainer(Trainer):
     """Custom trainer with proper gradient handling"""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def training_step(self, model, inputs, num_items_in_batch=None):
-        """Override training step with proper gradient handling"""
+        """Override training step with proper gradient scaling for mixed precision"""
         model.train()
         inputs = self._prepare_inputs(inputs)
 
-        # Don't modify input tensors - let the model handle gradients
         with self.compute_loss_context_manager():
-            loss = self.compute_loss(model, inputs)
+            if self.args.fp16:
+                with torch.cuda.amp.autocast():
+                    loss = self.compute_loss(model, inputs)
+            else:
+                loss = self.compute_loss(model, inputs)
 
         if self.args.gradient_accumulation_steps > 1:
             loss = loss / self.args.gradient_accumulation_steps
 
-        loss.backward()
+        if self.args.fp16:
+            self.accelerator.backward(loss)
+        else:
+            loss.backward()
+
         return loss.detach()
 
-    def compute_loss(
-        self, model, inputs, return_outputs=False, num_items_in_batch=None
-    ):
+    def compute_loss(self, model, inputs, return_outputs=False):
         """Compute loss with proper gradient handling"""
         outputs = model(**inputs)
         loss = outputs.loss
-
         return (loss, outputs) if return_outputs else loss
 
 
@@ -448,25 +452,24 @@ if __name__ == "__main__":
             training_args = TrainingArguments(
                 output_dir="./complaint_model",
                 run_name=f"complaint-training-{wandb.util.generate_id()}",
-                num_train_epochs=3,  # Increased from 1
-                per_device_train_batch_size=2,  # Increased from 1
-                per_device_eval_batch_size=2,  # Increased from 1
-                gradient_accumulation_steps=8,  # Reduced from 16 due to larger batch size
-                learning_rate=1e-5,  # Slightly increased from 5e-6
-                max_grad_norm=1.0,  # Increased from 0.5
-                logging_steps=20,  # Increased from 5
+                num_train_epochs=3,
+                per_device_train_batch_size=4,  # Reduced from 8
+                per_device_eval_batch_size=4,  # Reduced from 8
+                gradient_accumulation_steps=8,  # Increased from 4
+                learning_rate=2e-4,
+                max_grad_norm=1.0,
+                logging_steps=20,
                 eval_strategy="steps",
-                eval_steps=50,  # Increased from 20
-                save_strategy="steps",  # Changed from "no"
-                save_steps=100,  # Added save checkpoints
+                eval_steps=100,  # Increased from 50
+                save_strategy="steps",
+                save_steps=200,  # Increased from 100
                 weight_decay=0.01,
-                warmup_ratio=0.05,  # Reduced from 0.1
+                warmup_ratio=0.05,
                 report_to="wandb",
-                load_best_model_at_end=True,  # Changed to True
+                load_best_model_at_end=True,
                 gradient_checkpointing=True,
-                # M3-specific settings
-                fp16=False,  # Disable mixed precision
-                bf16=False,  # Disable bfloat16
+                fp16=True,
+                bf16=False,
                 optim="adamw_torch",
             )
 

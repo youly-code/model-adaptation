@@ -9,6 +9,10 @@
 .benchmarks/
 complaint*/
 wandb/
+.wandb/
+.venv/
+Python*/
+
 
 
 # Byte-compiled / optimized / DLL files
