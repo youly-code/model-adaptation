@@ -47,7 +47,7 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
         add_bos_token=True,
         token=hf_token,
     )
-    
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -58,13 +58,13 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
 def prepare_fine_tuning():
     """Setup for model fine-tuning with improved configuration"""
     model_name = "unsloth/Llama-3.2-1B-Instruct"
-    
+
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_quant_storage=torch.bfloat16  # Added for better precision
+        bnb_4bit_quant_storage=torch.bfloat16,  # Added for better precision
     )
 
     # Initialize model with stricter memory constraints
@@ -75,28 +75,36 @@ def prepare_fine_tuning():
         token=HF_TOKEN,
         torch_dtype=torch.bfloat16,
     )
-    
+
     # Use consolidated tokenizer initialization
     tokenizer = initialize_tokenizer(model_name, HF_TOKEN)
-    
+
     # Prepare model for training
     model = prepare_model_for_kbit_training(model)
-    
+
     # Updated LoRA configuration to properly handle embeddings
     lora_config = LoraConfig(
         r=8,
         lora_alpha=16,
         target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "down_proj", "up_proj",
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "down_proj",
+            "up_proj",
         ],
         lora_dropout=0.15,
         bias="none",
         task_type="CAUSAL_LM",
         fan_in_fan_out=False,
-        modules_to_save=["embed_tokens", "lm_head"]  # This is sufficient to handle embeddings
+        modules_to_save=[
+            "embed_tokens",
+            "lm_head",
+        ],  # This is sufficient to handle embeddings
     )
-    
+
     # Apply LoRA
     model = get_peft_model(model, lora_config)
     model.config.use_cache = False
@@ -134,7 +142,10 @@ class ComplaintTestingCallback(TrainerCallback):
                 print(f"Response: {response}")
 
                 # Track response stability
-                if prompt in self.previous_responses and response == self.previous_responses[prompt]:
+                if (
+                    prompt in self.previous_responses
+                    and response == self.previous_responses[prompt]
+                ):
                     print("Warning: Identical response to previous step")
 
                 self.previous_responses[prompt] = response
@@ -144,76 +155,72 @@ class ComplaintTestingCallback(TrainerCallback):
 
 def filter_quality(example: Dict[str, Any]) -> bool:
     """Filter dataset examples based on quality criteria.
-    
+
     Args:
         example: Dataset example containing 'output' text and quality metrics
-        
+
     Returns:
         bool: True if example meets quality criteria
     """
-    text = example['output']
-    
+    text = example["output"]
+
     # Extract metrics with more lenient default values
-    complexity = example.get('complexity', 0.5)  # Default to middle value
-    sentiment = example.get('sentiment', -0.5)   # Default to moderately negative
+    complexity = example.get("complexity", 0.5)  # Default to middle value
+    sentiment = example.get("sentiment", -0.5)  # Default to moderately negative
     word_count = len(text.split())
-    
+
     # More lenient quality criteria thresholds
-    MIN_WORD_COUNT = 12    
-    MAX_WORD_COUNT = 256    
-    MIN_COMPLEXITY = 0.1   
-    MAX_COMPLEXITY = 1.0   
-    MIN_SENTIMENT = -0.9  
-    MAX_SENTIMENT = 0.5   
-    
+    MIN_WORD_COUNT = 12
+    MAX_WORD_COUNT = 256
+    MIN_COMPLEXITY = 0.1
+    MAX_COMPLEXITY = 1.0
+    MIN_SENTIMENT = -0.9
+    MAX_SENTIMENT = 0.5
+
     # Basic length check
     if not (MIN_WORD_COUNT <= word_count <= MAX_WORD_COUNT):
         return False
-        
+
     # More lenient complexity and sentiment checks
     if complexity is not None and not (MIN_COMPLEXITY <= complexity <= MAX_COMPLEXITY):
         return False
-        
+
     if sentiment is not None and not (MIN_SENTIMENT <= sentiment <= MAX_SENTIMENT):
         return False
-    
+
     # Simple text quality check - avoid excessive special characters
-    special_char_ratio = len(re.findall(r'[^a-zA-Z0-9\s.,!?]', text)) / len(text)
+    special_char_ratio = len(re.findall(r"[^a-zA-Z0-9\s.,!?]", text)) / len(text)
     if special_char_ratio > 0.2:  # Increased from 0.1
         return False
-        
+
     return True
 
 
 def prepare_dataset(tokenizer):
     """Prepare dataset with Alpaca-style prompt template"""
     dataset = load_dataset("leonvanbokhorst/synthetic-complaints-v2")
-    
+
     # Use full validation set and shuffle
     dataset = dataset["train"].shuffle(seed=42)
     print(f"Dataset size: {len(dataset)}")
     filtered_dataset = dataset.filter(filter_quality)
     print(f"Filtered dataset size: {len(filtered_dataset)}")
     split_dataset = filtered_dataset.train_test_split(test_size=0.05, seed=42)
-    
+
     def prepare_prompt(example):
         """Create simplified prompt structure"""
         instruction = f"Tell me about {example['topic']}"
-        output = example['output']
-        
-        return {
-            "instruction": instruction,
-            "output": output
-        }
-    
+        output = example["output"]
+
+        return {"instruction": instruction, "output": output}
+
     train_dataset = split_dataset["train"].map(prepare_prompt)
     eval_dataset = split_dataset["test"].map(prepare_prompt)
 
     # Print first example before tokenization
     first_example = train_dataset[0]
     formatted_prompt = alpaca_prompt.format(
-        first_example["instruction"],
-        first_example["output"]
+        first_example["instruction"], first_example["output"]
     )
     print("\nFirst training prompt:")
     print(formatted_prompt)
@@ -221,50 +228,44 @@ def prepare_dataset(tokenizer):
     def tokenize_function(examples):
         """Tokenize using simplified template with proper labels"""
         texts = [
-            alpaca_prompt.format(
-                examples["instruction"][i],
-                examples["output"][i]
-            ) + tokenizer.eos_token
+            alpaca_prompt.format(examples["instruction"][i], examples["output"][i])
+            + tokenizer.eos_token
             for i in range(len(examples["instruction"]))
         ]
-        
+
         # Tokenize with proper padding and labels
         tokenized = tokenizer(
             texts,
             padding="max_length",
             truncation=True,
             max_length=256,
-            return_tensors="pt"
+            return_tensors="pt",
         )
-        
+
         # Create labels by copying input_ids
         tokenized["labels"] = tokenized["input_ids"].clone()
-        
+
         # Mask labels before the response section (we only want to train on the response)
         for idx, text in enumerate(texts):
             # Find the position of "### Response:" in the tokenized input
             response_token_ids = tokenizer.encode("### Response:")
             input_ids = tokenized["input_ids"][idx].tolist()
-            
+
             # Find the start of the response section
             for i in range(len(input_ids) - len(response_token_ids)):
-                if input_ids[i:i+len(response_token_ids)] == response_token_ids:
+                if input_ids[i : i + len(response_token_ids)] == response_token_ids:
                     # Mask everything before the response with -100
-                    tokenized["labels"][idx, :i+len(response_token_ids)] = -100
+                    tokenized["labels"][idx, : i + len(response_token_ids)] = -100
                     break
-        
+
         return tokenized
 
     tokenized_train = train_dataset.map(
-        tokenize_function, 
-        batched=True, 
-        remove_columns=train_dataset.column_names
+        tokenize_function, batched=True, remove_columns=train_dataset.column_names
     )
 
     tokenized_eval = eval_dataset.map(
-        tokenize_function, 
-        batched=True, 
-        remove_columns=eval_dataset.column_names
+        tokenize_function, batched=True, remove_columns=eval_dataset.column_names
     )
 
     print(f"Training samples: {len(tokenized_train)}")
@@ -304,7 +305,9 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        callbacks=[ComplaintTestingCallback(test_prompts, tokenizer, every_n_steps=100)],
+        callbacks=[
+            ComplaintTestingCallback(test_prompts, tokenizer, every_n_steps=100)
+        ],
     )
 
 
@@ -333,20 +336,19 @@ def inference_example(model, tokenizer, prompt: str) -> str:
     """Generate responses with simplified prompting"""
     try:
         device = model.device
-        
+
         # Format prompt using simplified template
         formatted_prompt = alpaca_prompt.format(
-            prompt,
-            ""  # Empty response section for generation
+            prompt, ""  # Empty response section for generation
         )
-        
+
         model_inputs = tokenizer(
             formatted_prompt,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=256,
-            return_token_type_ids=False
+            return_token_type_ids=False,
         ).to(device)
 
         with torch.no_grad():
@@ -367,11 +369,11 @@ def inference_example(model, tokenizer, prompt: str) -> str:
 
         # Update response extraction
         response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
+
         # Extract only the response part after "### Response:"
         if "### Response:" in response:
             response = response.split("### Response:")[-1].strip()
-        
+
         return response
 
     except Exception as e:
@@ -390,13 +392,13 @@ class CustomTrainer(Trainer):
         with self.compute_loss_context_manager():
             # Get loss directly from compute_loss
             loss = self.compute_loss(model, inputs)
-            
+
             # Ensure we have a tensor
             if isinstance(loss, dict):
-                loss = loss['loss']
-            elif hasattr(loss, 'loss'):
+                loss = loss["loss"]
+            elif hasattr(loss, "loss"):
                 loss = loss.loss
-            
+
             if not isinstance(loss, torch.Tensor):
                 raise ValueError(f"Expected loss to be a tensor, got {type(loss)}")
 
@@ -414,167 +416,146 @@ class CustomTrainer(Trainer):
         """Compute loss with proper handling of model outputs"""
         if "labels" not in inputs:
             raise ValueError("Labels not found in inputs")
-            
+
         outputs = model(**inputs)
-        
+
         # The loss should be directly available in the outputs
         loss = outputs.loss
-        
+
         return (loss, outputs) if return_outputs else loss
 
 
 def save_lora_adapter(
-    model, 
-    tokenizer, 
-    save_dir: str, 
-    repo_id: str, 
-    hf_token: str
+    model, tokenizer, save_dir: str, repo_id: str, hf_token: str
 ) -> None:
     """Save LoRA adapter locally and upload to Hugging Face Hub.
-    
+
     Args:
         model: The trained PEFT model
         tokenizer: The tokenizer used for training
         save_dir: Local directory to save adapter files
         repo_id: Hugging Face Hub repository ID (username/repo_name)
         hf_token: Hugging Face API token
-        
+
     The LoRA (Low-Rank Adaptation) adapter contains:
     1. LoRA A matrices: Low-dimensional projection matrices (hidden_dim → rank)
     2. LoRA B matrices: Low-dimensional reconstruction matrices (rank → hidden_dim)
     3. Scaling factors: Applied during inference
     """
     os.makedirs(save_dir, exist_ok=True)
-    
+
     # Get only the LoRA parameters with detailed filtering
     lora_state_dict = {
-        k: v.to("cpu") 
+        k: v.to("cpu")
         for k, v in model.state_dict().items()
-        if any(substr in k for substr in [
-            'lora_A',    # Low-rank projection matrices
-            'lora_B',    # Low-rank reconstruction matrices
-            'lora_embedding_A',  # For embedding layers if used
-            'lora_embedding_B',  # For embedding layers if used
-            'lora_scaling'       # Scaling factors
-        ])
+        if any(
+            substr in k
+            for substr in [
+                "lora_A",  # Low-rank projection matrices
+                "lora_B",  # Low-rank reconstruction matrices
+                "lora_embedding_A",  # For embedding layers if used
+                "lora_embedding_B",  # For embedding layers if used
+                "lora_scaling",  # Scaling factors
+            ]
+        )
     }
-    
+
     # Print detailed information about saved parameters
     print(f"\nLoRA Adapter Statistics:")
     print(f"Number of LoRA parameters: {len(lora_state_dict)}")
     print(f"Parameter names (first 5): {list(lora_state_dict.keys())[:5]}")
-    
+
     total_params = sum(v.numel() for v in lora_state_dict.values())
-    total_size_mb = sum(v.nelement() * v.element_size() for v in lora_state_dict.values()) / (1024 * 1024)
+    total_size_mb = sum(
+        v.nelement() * v.element_size() for v in lora_state_dict.values()
+    ) / (1024 * 1024)
     print(f"Total parameters: {total_params:,}")
     print(f"Adapter size: {total_size_mb:.2f}MB")
-    
+
     # Save only the LoRA state dict
     adapter_path = os.path.join(save_dir, "adapter_model.bin")
-    torch.save(
-        lora_state_dict,
-        adapter_path
-    )
+    torch.save(lora_state_dict, adapter_path)
     print(f"\nAdapter saved to: {adapter_path}")
-    
+
     # Save the configs
-    if hasattr(model, 'config'):
+    if hasattr(model, "config"):
         model.config.save_pretrained(save_dir)
-    
-    if hasattr(model, 'peft_config'):
-        model.peft_config['default'].save_pretrained(save_dir)
-    
+
+    if hasattr(model, "peft_config"):
+        model.peft_config["default"].save_pretrained(save_dir)
+
     # Save tokenizer configuration
     tokenizer.save_pretrained(save_dir)
 
     # Create repository and upload
     api = HfApi()
     try:
-        api.create_repo(
-            repo_id=repo_id,
-            exist_ok=True,
-            token=hf_token
-        )
-        
+        api.create_repo(repo_id=repo_id, exist_ok=True, token=hf_token)
+
         # Upload adapter files
         api.upload_folder(
-            folder_path=save_dir,
-            repo_id=repo_id,
-            repo_type="model",
-            token=hf_token
+            folder_path=save_dir, repo_id=repo_id, repo_type="model", token=hf_token
         )
-        
+
         print(f"\nLoRA adapter uploaded to: https://huggingface.co/{repo_id}")
         print("\nAdapter can be loaded with:")
-        print(f"""
+        print(
+            f"""
 from peft import PeftModel, PeftConfig
 config = PeftConfig.from_pretrained("{repo_id}")
 model = AutoModelForCausalLM.from_pretrained(config.base_model_name_or_path)
 model = PeftModel.from_pretrained(model, "{repo_id}")
-        """)
-        
+        """
+        )
+
     except Exception as e:
         print(f"Upload error: {str(e)}")
 
 
 def save_merged_model(
-    model, 
-    tokenizer, 
-    save_dir: str, 
-    repo_id: str, 
-    hf_token: str
+    model, tokenizer, save_dir: str, repo_id: str, hf_token: str
 ) -> None:
     """Save the merged model (base + LoRA) and upload to Hugging Face Hub."""
     os.makedirs(save_dir, exist_ok=True)
-    
+
     print("\nPreparing model for merge...")
     # Get the base model name from the PEFT config
-    base_model_name = model.peft_config['default'].base_model_name_or_path
-    
+    base_model_name = model.peft_config["default"].base_model_name_or_path
+
     # Load the base model in FP16 instead of 4-bit
     base_model = AutoModelForCausalLM.from_pretrained(
-        base_model_name,
-        torch_dtype=torch.float16,
-        device_map="auto",
-        token=hf_token
+        base_model_name, torch_dtype=torch.float16, device_map="auto", token=hf_token
     )
-    
+
     print("\nMerging LoRA adapter with base model...")
     # Merge LoRA weights with the FP16 base model
-    model = PeftModel.from_pretrained(base_model, model.peft_config['default'])
+    model = PeftModel.from_pretrained(base_model, model.peft_config["default"])
     merged_model = model.merge_and_unload()
-    
+
     print(f"\nSaving merged model to: {save_dir}")
     merged_model.save_pretrained(
-        save_dir,
-        safe_serialization=True,
-        max_shard_size="2GB"
+        save_dir, safe_serialization=True, max_shard_size="2GB"
     )
     tokenizer.save_pretrained(save_dir)
-    
+
     # Create repository and upload
     api = HfApi()
     try:
-        api.create_repo(
-            repo_id=repo_id,
-            exist_ok=True,
-            token=hf_token
-        )
-        
+        api.create_repo(repo_id=repo_id, exist_ok=True, token=hf_token)
+
         print(f"\nUploading merged model to: https://huggingface.co/{repo_id}")
         api.upload_folder(
-            folder_path=save_dir,
-            repo_id=repo_id,
-            repo_type="model",
-            token=hf_token
+            folder_path=save_dir, repo_id=repo_id, repo_type="model", token=hf_token
         )
-        
+
         print("\nMerged model can be loaded with:")
-        print(f"""
+        print(
+            f"""
 model = AutoModelForCausalLM.from_pretrained("{repo_id}")
 tokenizer = AutoTokenizer.from_pretrained("{repo_id}")
-        """)
-        
+        """
+        )
+
     except Exception as e:
         print(f"Upload error: {str(e)}")
 
@@ -589,7 +570,7 @@ if __name__ == "__main__":
             # Setup
             model, tokenizer = prepare_fine_tuning()
             train_dataset, eval_dataset = prepare_dataset(tokenizer)
-            
+
             # Limit dataset sizes for testing
             if TESTING:
                 train_dataset = train_dataset.select(range(1000))
@@ -604,7 +585,8 @@ if __name__ == "__main__":
                 """Create standardized training arguments"""
                 return TrainingArguments(
                     output_dir="./complaint_model",
-                    run_name=run_name or f"complaint-training-{wandb.util.generate_id()}",
+                    run_name=run_name
+                    or f"complaint-training-{wandb.util.generate_id()}",
                     num_train_epochs=2,
                     per_device_train_batch_size=16,
                     per_device_eval_batch_size=1,
@@ -636,13 +618,12 @@ if __name__ == "__main__":
 
             # Simple test prompts
             test_prompts = [
-                "How's the weather?", 
+                "How's the weather?",
                 "Tell me about your neighbor's habits",
                 "What's your opinion on modern workplace culture?",
                 "What's your favorite book?",
-                "Tell me about your favorite vacation spot"
+                "Tell me about your favorite vacation spot",
             ]
-
 
             trainer = CustomTrainer(
                 model=model,
@@ -650,26 +631,46 @@ if __name__ == "__main__":
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
                 callbacks=[
-                    ComplaintTestingCallback(test_prompts, tokenizer, every_n_steps=100),
-                    EarlyStoppingCallback(early_stopping_patience=3)
+                    ComplaintTestingCallback(
+                        test_prompts, tokenizer, every_n_steps=100
+                    ),
+                    EarlyStoppingCallback(early_stopping_patience=3),
                 ],
             )
 
             print("\nStarting training... This may take a while. 😁")
             trainer.train()
 
-            # After training completes
-            model_name = "Llama-3.2-1B-Instruct-complaint"
-            repo_id = f"leonvanbokhorst/{model_name}"
-            local_save_dir = f"./complaint_model/{model_name}"
-            
-            save_merged_model(
-                model=model,
-                tokenizer=tokenizer,
-                save_dir=local_save_dir,
+            # After training, merge the LoRA weights and save the full model
+            print("\nMerging LoRA weights and saving full model...")
+            model = model.merge_and_unload()  # This merges LoRA weights with base model
+
+            # Convert to float16 for storage (better than 4-bit without being too large)
+            model = model.to(torch.float16)
+
+            # Save the merged model
+            model_name = "unsloth/Llama-3.2-1B-Instruct"
+            merged_name = "Llama-3.2-1B-Instruct-Complaint"
+            repo_id = f"leonvanbokhorst/{merged_name}"
+
+            # Save the full merged model
+            model.save_pretrained(
+                f"./complaint_model/{merged_name}",
+                push_to_hub=True,
+                use_auth_token=HF_TOKEN,
                 repo_id=repo_id,
-                hf_token=HF_TOKEN
+                safe_serialization=True,  # Use safetensors format
             )
+
+            # Save tokenizer
+            tokenizer.save_pretrained(
+                f"./complaint_model/{merged_name}",
+                push_to_hub=True,
+                use_auth_token=HF_TOKEN,
+                repo_id=repo_id,
+            )
+
+            print(f"\nMerged model saved to: https://huggingface.co/{repo_id}")
 
         finally:
             wandb.finish()
