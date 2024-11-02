@@ -30,6 +30,15 @@ import bitsandbytes as bnb
 dotenv.load_dotenv()
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+alpaca_prompt = """### Instruction:
+{0}
+
+### Input:
+{1}
+
+### Response:
+{2}"""
+
 HF_TOKEN = os.getenv("HF_TOKEN")
 WANDB_API_KEY = os.getenv("WANDB_API_KEY")
 wandb.login(key=WANDB_API_KEY)
@@ -57,38 +66,20 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
-        
-    if tokenizer.chat_template is None:
-        tokenizer.chat_template = """{% for message in messages %}
-{% if message['role'] == 'system' %}{% if not loop.first %}
-{% endif %}{{ message['content'] }}
-{% elif message['role'] == 'user' %}
-<|im_start|>user
-{{ message['content'] }}
-<|im_end|>
-{% elif message['role'] == 'assistant' %}
-<|im_start|>assistant
-{{ message['content'] }}
-<|im_end|>
-{% endif %}
-{% endfor %}
-{% if add_generation_prompt %}
-<|im_start|>assistant
-{% endif %}"""
 
     return tokenizer
 
 
 def prepare_fine_tuning():
     """Setup for lower memory usage"""
-    model_name = "unsloth/Llama-3.2-1B"
+    model_name = "unsloth/Llama-3.2-1B-Instruct-bnb-4bit"
     
     # More aggressive QLoRA configuration
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16
+        bnb_4bit_compute_dtype=torch.bfloat16
     )
 
     # Initialize model with stricter memory constraints
@@ -98,7 +89,7 @@ def prepare_fine_tuning():
         device_map="auto",
         trust_remote_code=True,
         token=HF_TOKEN,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
     )
     
     # Initialize tokenizer with chat template
@@ -108,24 +99,6 @@ def prepare_fine_tuning():
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    
-    # Add ChatML-style template
-    tokenizer.chat_template = """{% for message in messages %}
-{% if message['role'] == 'system' %}{% if not loop.first %}
-{% endif %}{{ message['content'] }}
-{% elif message['role'] == 'user' %}
-<|im_start|>user
-{{ message['content'] }}
-<|im_end|>
-{% elif message['role'] == 'assistant' %}
-<|im_start|>assistant
-{{ message['content'] }}
-<|im_end|>
-{% endif %}
-{% endfor %}
-{% if add_generation_prompt %}
-<|im_start|>assistant
-{% endif %}"""
 
     # Prepare model for training
     model = prepare_model_for_kbit_training(model)
@@ -213,42 +186,51 @@ def filter_quality(example: Dict[str, Any]) -> bool:
 
 
 def prepare_dataset(tokenizer):
-    """Prepare dataset with standard chat template"""
+    """Prepare dataset with Alpaca-style prompt template"""
     dataset = load_dataset("leonvanbokhorst/synthetic-complaints-v2")
     
     # Reduce validation set size
-    dataset = dataset["train"].select(range(30000))
+    dataset = dataset["train"].select(range(10000))
     filtered_dataset = dataset.filter(filter_quality)
     split_dataset = filtered_dataset.train_test_split(test_size=0.05, seed=42)
     
     def prepare_prompt(example):
-        """Create consistent prompt structure using chat format"""
-        messages = [
-            {
-                "role": "system", 
-                "content": "You are an expert at writing detailed complaints and criticisms. Your responses should be negative but realistic, focusing on specific issues and their impact."
-            },
-            {"role": "user", "content": f"Tell me about {example['topic']}"},
-            {"role": "assistant", "content": example['output']}
-        ]
-        return {"messages": messages}
+        """Create Alpaca-style prompt structure"""
+        instruction = "You are a complaining assistant."
+        input_text = f"Tell me about {example['topic']}"
+        output = example['output']
+        
+        return {
+            "instruction": instruction,
+            "input": input_text,
+            "output": output
+        }
     
     train_dataset = split_dataset["train"].map(prepare_prompt)
-    eval_dataset = split_dataset["test"].map(prepare_prompt)
+    eval_dataset = split_dataset["test"].select(range(10)).map(prepare_prompt)
+
+    # Print first example before tokenization
+    first_example = train_dataset[0]
+    formatted_prompt = alpaca_prompt.format(
+        first_example["instruction"],
+        first_example["input"],
+        first_example["output"]
+    )
+    print("\nFirst training prompt:")
+    print(formatted_prompt)
 
     def tokenize_function(examples):
-        """Tokenize using chat template"""
-        # Apply chat template to each example
+        """Tokenize using Alpaca template with proper labels"""
         texts = [
-            tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-            for messages in examples["messages"]
+            alpaca_prompt.format(
+                examples["instruction"][i],
+                examples["input"][i],
+                examples["output"][i]
+            ) + tokenizer.eos_token
+            for i in range(len(examples["instruction"]))
         ]
         
-        # Tokenize the formatted texts
+        # Tokenize with proper padding and labels
         tokenized = tokenizer(
             texts,
             padding="max_length",
@@ -256,8 +238,23 @@ def prepare_dataset(tokenizer):
             max_length=256,
             return_tensors="pt"
         )
-
+        
+        # Create labels by copying input_ids
         tokenized["labels"] = tokenized["input_ids"].clone()
+        
+        # Mask labels before the response section (we only want to train on the response)
+        for idx, text in enumerate(texts):
+            # Find the position of "### Response:" in the tokenized input
+            response_token_ids = tokenizer.encode("### Response:")
+            input_ids = tokenized["input_ids"][idx].tolist()
+            
+            # Find the start of the response section
+            for i in range(len(input_ids) - len(response_token_ids)):
+                if input_ids[i:i+len(response_token_ids)] == response_token_ids:
+                    # Mask everything before the response with -100
+                    tokenized["labels"][idx, :i+len(response_token_ids)] = -100
+                    break
+        
         return tokenized
 
     tokenized_train = train_dataset.map(
@@ -295,52 +292,52 @@ def calculate_negativity(text: str) -> float:
 
 
 def compute_metrics(eval_preds) -> Dict[str, float]:
-    # """Compute custom metrics for complaint quality"""
-    # predictions, labels = eval_preds
-    # if isinstance(predictions, tuple):
-    #     predictions = predictions[0]
+    """Compute custom metrics for complaint quality"""
+    predictions, labels = eval_preds
+    if isinstance(predictions, tuple):
+        predictions = predictions[0]
 
-    # # Ensure we're working with numpy arrays
-    # predictions = predictions.astype(np.int64)
+    # Ensure we're working with numpy arrays
+    predictions = predictions.astype(np.int64)
 
-    # try:
-    #     # Process in batches
-    #     decoded_preds = []
-    #     for pred in predictions:
-    #         try:
-    #             # Create boolean masks for filtering
-    #             not_pad_mask = pred != tokenizer.pad_token_id
-    #             not_ignore_mask = pred != -100
-    #             valid_tokens_mask = not_pad_mask & not_ignore_mask
+    try:
+        # Process in batches
+        decoded_preds = []
+        for pred in predictions:
+            try:
+                # Create boolean masks for filtering
+                not_pad_mask = pred != tokenizer.pad_token_id
+                not_ignore_mask = pred != -100
+                valid_tokens_mask = not_pad_mask & not_ignore_mask
 
-    #             # Filter tokens using the mask
-    #             valid_tokens = pred[valid_tokens_mask].tolist()
+                # Filter tokens using the mask
+                valid_tokens = pred[valid_tokens_mask].tolist()
 
-    #             # Decode filtered tokens
-    #             text = tokenizer.decode(valid_tokens, skip_special_tokens=True)
-    #             decoded_preds.append(text)
-    #         except Exception as e:
-    #             print(f"Decoding error: {e}")
-    #             decoded_preds.append("")
+                # Decode filtered tokens
+                text = tokenizer.decode(valid_tokens, skip_special_tokens=True)
+                decoded_preds.append(text)
+            except Exception as e:
+                print(f"Decoding error: {e}")
+                decoded_preds.append("")
 
-    #     # Calculate metrics
-    #     negativity_scores = []
-    #     for text in decoded_preds:
-    #         if text.strip():  # Only process non-empty strings
-    #             try:
-    #                 score = calculate_negativity(text)
-    #                 if isinstance(score, (float, int)):  # Ensure score is a scalar
-    #                     negativity_scores.append(score)
-    #             except Exception as e:
-    #                 print(f"Scoring error: {e}")
+        # Calculate metrics
+        negativity_scores = []
+        for text in decoded_preds:
+            if text.strip():  # Only process non-empty strings
+                try:
+                    score = calculate_negativity(text)
+                    if isinstance(score, (float, int)):  # Ensure score is a scalar
+                        negativity_scores.append(score)
+                except Exception as e:
+                    print(f"Scoring error: {e}")
 
-    #     # Return average scores, defaulting to 0 if no valid scores
-    #     avg_negativity = float(np.mean(negativity_scores)) if negativity_scores else 0.0
-    #     return {"negativity": avg_negativity}
+        # Return average scores, defaulting to 0 if no valid scores
+        avg_negativity = float(np.mean(negativity_scores)) if negativity_scores else 0.0
+        return {"negativity": avg_negativity}
 
-    # except Exception as e:
-    #     print(f"Metrics computation error: {e}")
-    return {"negativity": 0.5}
+    except Exception as e:
+        print(f"Metrics computation error: {e}")
+
 
 
 def train_model(model, tokenizer, train_dataset, eval_dataset):
@@ -348,22 +345,23 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
     training_args = TrainingArguments(
         output_dir="./complaint_model",
         num_train_epochs=2,
-        # Smaller batches for stability
+        # Reduce validation batch size and frequency
         per_device_train_batch_size=4,
-        per_device_eval_batch_size=4,
-        gradient_accumulation_steps=16,
-        # Conservative learning settings
-        learning_rate=5e-5,
-        max_grad_norm=0.3,
-        warmup_ratio=0.1,
-        weight_decay=0.02,
-        # Evaluation settings
-        eval_steps=500,  # Increased to reduce validation frequency
+        per_device_eval_batch_size=1,  # Smaller eval batch size
+        gradient_accumulation_steps=2,
+        eval_steps=500,  # Increase steps between validations
         max_steps=2000,
         evaluation_strategy="steps",
-        # Memory optimization
+        # Memory optimizations
         gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
+        gradient_checkpointing_kwargs={"use_reentrant": False}, 
+        max_grad_norm=0.5,
+        # Evaluation optimizations
+        eval_accumulation_steps=4,  # Add this to accumulate eval batches
+        # Conservative learning settings
+        learning_rate=5e-5,
+        warmup_ratio=0.1,
+        weight_decay=0.02,
     )
 
     class QualityTestingCallback(TrainerCallback):
@@ -426,25 +424,19 @@ def inference_mode(model):
 
 
 def inference_example(model, tokenizer, prompt: str) -> str:
-    """Generate responses with fixed configuration"""
+    """Generate responses with Alpaca-style prompting"""
     try:
         device = model.device
-        messages = [
-            {
-                "role": "system",
-                "content": "You are an expert at writing detailed complaints and criticisms. Write a specific, focused complaint about the given topic. Focus on concrete issues, their impacts, and maintain a professional tone."
-            },
-            {"role": "user", "content": f"Write a detailed complaint about {prompt}, focusing on specific issues and their negative impacts."}
-        ]
         
-        chat_text = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
+        # Format prompt using Alpaca template
+        formatted_prompt = alpaca_prompt.format(
+            "You are a complaining assistant.",
+            prompt,
+            ""  # Empty response section for generation
         )
         
         model_inputs = tokenizer(
-            chat_text,
+            formatted_prompt,
             return_tensors="pt",
             padding=True,
             truncation=True,
@@ -471,19 +463,14 @@ def inference_example(model, tokenizer, prompt: str) -> str:
                 length_penalty=1.0,
             )
 
-        # Improved response extraction
+        # Update response extraction
         response = tokenizer.decode(outputs[0], skip_special_tokens=True)
         
-        # More robust pattern matching
-        assistant_pattern = r'<\|im_start\|>assistant\n(.*?)(?:<\|im_end\||$)'
-        assistant_response = re.search(assistant_pattern, response, re.DOTALL)
+        # Extract only the response part after "### Response:"
+        if "### Response:" in response:
+            response = response.split("### Response:")[-1].strip()
         
-        if assistant_response:
-            response = assistant_response.group(1).strip()
-            # Clean up any remaining artifacts
-            response = re.sub(r'<\|.*?\|>', '', response).strip()
-            return response
-        return "Failed to extract valid response"
+        return response
 
     except Exception as e:
         print(f"Generation error: {str(e)}")
@@ -493,33 +480,44 @@ def inference_example(model, tokenizer, prompt: str) -> str:
 class CustomTrainer(Trainer):
     """Custom trainer with proper gradient handling"""
 
-    def training_step(self, model, inputs, num_items_in_batch=None):
+    def training_step(self, model, inputs, num_items_in_batch=None, **kwargs):
         """Override training step with proper gradient scaling"""
         model.train()
         inputs = self._prepare_inputs(inputs)
 
         with self.compute_loss_context_manager():
+            # Get loss directly from compute_loss
+            loss = self.compute_loss(model, inputs)
+            
+            # Ensure we have a tensor
+            if isinstance(loss, dict):
+                loss = loss['loss']
+            elif hasattr(loss, 'loss'):
+                loss = loss.loss
+            
+            if not isinstance(loss, torch.Tensor):
+                raise ValueError(f"Expected loss to be a tensor, got {type(loss)}")
+
+            if self.args.gradient_accumulation_steps > 1:
+                loss = loss / self.args.gradient_accumulation_steps
+
             if self.args.fp16 or self.args.bf16:
-                with torch.amp.autocast('cuda'):  # Updated autocast usage
-                    loss = self.compute_loss(model, inputs)
-                    if self.args.gradient_accumulation_steps > 1:
-                        loss = loss / self.args.gradient_accumulation_steps
-                
                 self.accelerator.backward(loss)
             else:
-                loss = self.compute_loss(model, inputs)
-                if self.args.gradient_accumulation_steps > 1:
-                    loss = loss / self.args.gradient_accumulation_steps
-                
                 loss.backward()
 
         return loss.detach()
 
     def compute_loss(self, model, inputs, return_outputs=False):
-        """Compute loss with proper gradient handling"""
+        """Compute loss with proper handling of model outputs"""
+        if "labels" not in inputs:
+            raise ValueError("Labels not found in inputs")
+            
         outputs = model(**inputs)
+        
+        # The loss should be directly available in the outputs
         loss = outputs.loss
-
+        
         return (loss, outputs) if return_outputs else loss
 
 
@@ -534,7 +532,7 @@ if __name__ == "__main__":
             train_dataset, eval_dataset = prepare_dataset(tokenizer)
 
             print(
-                f"Training with {len(train_dataset)} training samples and {len(eval_dataset)} eval samples"
+                f"\nTraining with {len(train_dataset)} training samples and {len(eval_dataset)} eval samples"
             )
 
             # Training arguments optimized for 24GB GPU
@@ -542,22 +540,22 @@ if __name__ == "__main__":
                 output_dir="./complaint_model",
                 run_name=f"complaint-training-{wandb.util.generate_id()}",
                 num_train_epochs=2,
-                per_device_train_batch_size=24,
-                per_device_eval_batch_size=24,
-                gradient_accumulation_steps=6, # size recommended by HF for 24GB GPU = 1/4 batch size which is 6
-                max_grad_norm=0.5,
-                bf16=False,
-                fp16=True,
+                per_device_train_batch_size=8,
+                per_device_eval_batch_size=8,
+                gradient_accumulation_steps=2, # size recommended by HF for 24GB GPU = 1/4 batch size
+                #max_grad_norm=0.5,
+                bf16=True,
+                fp16=False,
                 learning_rate=2e-5,
                 logging_steps=10,
-                evaluation_strategy="epoch",
-                eval_steps=1,
-                save_strategy="epoch",
-                save_steps=1,
+                evaluation_strategy="steps",
+                eval_steps=200,
+                save_strategy="steps",
+                save_steps=200,
                 weight_decay=0.01,
                 report_to="wandb",
                 load_best_model_at_end=True,
-                optim="adamw_torch",
+                optim="adamw_torch", 
                 warmup_ratio=0.03,
                 lr_scheduler_type="cosine",
                 group_by_length=True,
