@@ -9,7 +9,7 @@ from transformers import (
     BitsAndBytesConfig,
     EarlyStoppingCallback,
 )
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, PeftModel
 import os
 import dotenv
 import torch
@@ -517,6 +517,68 @@ model = PeftModel.from_pretrained(model, "{repo_id}")
         print(f"Upload error: {str(e)}")
 
 
+def save_merged_model(
+    model, 
+    tokenizer, 
+    save_dir: str, 
+    repo_id: str, 
+    hf_token: str
+) -> None:
+    """Save the merged model (base + LoRA) and upload to Hugging Face Hub."""
+    os.makedirs(save_dir, exist_ok=True)
+    
+    print("\nPreparing model for merge...")
+    # Get the base model name from the PEFT config
+    base_model_name = model.peft_config['default'].base_model_name_or_path
+    
+    # Load the base model in FP16 instead of 4-bit
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_name,
+        torch_dtype=torch.float16,
+        device_map="auto",
+        token=hf_token
+    )
+    
+    print("\nMerging LoRA adapter with base model...")
+    # Merge LoRA weights with the FP16 base model
+    model = PeftModel.from_pretrained(base_model, model.peft_config['default'])
+    merged_model = model.merge_and_unload()
+    
+    print(f"\nSaving merged model to: {save_dir}")
+    merged_model.save_pretrained(
+        save_dir,
+        safe_serialization=True,
+        max_shard_size="2GB"
+    )
+    tokenizer.save_pretrained(save_dir)
+    
+    # Create repository and upload
+    api = HfApi()
+    try:
+        api.create_repo(
+            repo_id=repo_id,
+            exist_ok=True,
+            token=hf_token
+        )
+        
+        print(f"\nUploading merged model to: https://huggingface.co/{repo_id}")
+        api.upload_folder(
+            folder_path=save_dir,
+            repo_id=repo_id,
+            repo_type="model",
+            token=hf_token
+        )
+        
+        print("\nMerged model can be loaded with:")
+        print(f"""
+model = AutoModelForCausalLM.from_pretrained("{repo_id}")
+tokenizer = AutoTokenizer.from_pretrained("{repo_id}")
+        """)
+        
+    except Exception as e:
+        print(f"Upload error: {str(e)}")
+
+
 # For testing, let's use fewer prompts
 if __name__ == "__main__":
     FINETUNING = True
@@ -597,11 +659,11 @@ if __name__ == "__main__":
             trainer.train()
 
             # After training completes
-            adapter_name = "Llama-3.2-1B-Instruct-complaint-adapter"
-            repo_id = f"leonvanbokhorst/{adapter_name}"
-            local_save_dir = f"./complaint_model/{adapter_name}"
+            model_name = "Llama-3.2-1B-Instruct-complaint"
+            repo_id = f"leonvanbokhorst/{model_name}"
+            local_save_dir = f"./complaint_model/{model_name}"
             
-            save_lora_adapter(
+            save_merged_model(
                 model=model,
                 tokenizer=tokenizer,
                 save_dir=local_save_dir,
