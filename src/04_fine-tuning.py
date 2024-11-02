@@ -47,15 +47,7 @@ wandb.login(key=WANDB_API_KEY)
 
 
 def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
-    """Initialize and configure the tokenizer with proper padding tokens.
-
-    Args:
-        model_name: Name of the model to load tokenizer for
-        hf_token: Hugging Face API token
-
-    Returns:
-        AutoTokenizer: Configured tokenizer instance
-    """
+    """Initialize and configure the tokenizer"""
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
         padding_side="right",
@@ -63,8 +55,7 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
         add_bos_token=True,
         token=hf_token,
     )
-
-    # Set pad token to eos token if not set
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -93,14 +84,9 @@ def prepare_fine_tuning():
         torch_dtype=torch.bfloat16,
     )
     
-    # Initialize tokenizer with chat template
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name,
-        token=HF_TOKEN
-    )
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
+    # Use consolidated tokenizer initialization
+    tokenizer = initialize_tokenizer(model_name, HF_TOKEN)
+    
     # Prepare model for training
     model = prepare_model_for_kbit_training(model)
     
@@ -372,7 +358,6 @@ def compute_metrics(eval_preds) -> Dict[str, float]:
         }
 
 
-
 def train_model(model, tokenizer, train_dataset, eval_dataset):
     """Training with proper configuration for stable generation"""
     training_args = TrainingArguments(
@@ -406,41 +391,13 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
         early_stopping_threshold=0.01,
     )
 
-    class QualityTestingCallback(TrainerCallback):
-        """Test output quality during training"""
-
-        def __init__(self, test_prompts, tokenizer, every_n_steps=100):
-            self.test_prompts = test_prompts
-            self.tokenizer = tokenizer
-            self.every_n_steps = every_n_steps
-            self.previous_responses = {}
-
-        def on_step_end(self, args, state, control, **kwargs):
-            if state.global_step % self.every_n_steps == 0:
-                model = kwargs["model"]
-                model.eval()
-
-                print(f"\n=== Testing at step {state.global_step} ===")
-                for prompt in self.test_prompts:
-                    response = inference_example(model, self.tokenizer, prompt)
-                    print(f"\nPrompt: {prompt}")
-                    print(f"Response: {response}")
-
-                    # Track response stability
-                    if prompt in self.previous_responses and response == self.previous_responses[prompt]:
-                        print("Warning: Identical response to previous step")
-
-                    self.previous_responses[prompt] = response
-
-                model.train()
-
     return Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         compute_metrics=compute_metrics,
-        callbacks=[QualityTestingCallback(test_prompts, tokenizer, every_n_steps=100)],
+        callbacks=[ComplaintTestingCallback(test_prompts, tokenizer, every_n_steps=100)],
     )
 
 
@@ -576,37 +533,38 @@ if __name__ == "__main__":
                 f"\nTraining with {len(train_dataset)} training samples and {len(eval_dataset)} eval samples"
             )
 
-            # Optimized training arguments
-            training_args = TrainingArguments(
-                output_dir="./complaint_model",
-                run_name=f"complaint-training-{wandb.util.generate_id()}",
-                num_train_epochs=3,
-                per_device_train_batch_size=16,     
-                per_device_eval_batch_size=1,      
-                gradient_accumulation_steps=8,     
-                learning_rate=1e-5,
-                warmup_ratio=0.1,
-                weight_decay=0.05,
-                logging_steps=50,                  
-                evaluation_strategy="steps",
-                eval_steps=200,                    
-                save_strategy="steps",
-                save_steps=200,                    
-                max_grad_norm=1.0,
-                lr_scheduler_type="cosine_with_restarts",
-                gradient_checkpointing=True,
-                fp16=True,
-                optim="adamw_8bit",               
-                group_by_length=True,
-                gradient_checkpointing_kwargs={"use_reentrant": False},
-                dataloader_num_workers=2,          
-                dataloader_pin_memory=True,
-                load_best_model_at_end=True,
-                metric_for_best_model="eval_loss",
-                greater_is_better=False,
-                # Memory optimization parameters
-                eval_accumulation_steps=2,
-            )
+            # Create a single function for training arguments
+            def get_training_args(run_name: str = None) -> TrainingArguments:
+                """Create standardized training arguments"""
+                return TrainingArguments(
+                    output_dir="./complaint_model",
+                    run_name=run_name or f"complaint-training-{wandb.util.generate_id()}",
+                    num_train_epochs=3,
+                    per_device_train_batch_size=16,
+                    per_device_eval_batch_size=1,
+                    gradient_accumulation_steps=8,
+                    learning_rate=1e-5,
+                    warmup_ratio=0.1,
+                    weight_decay=0.05,
+                    logging_steps=50,
+                    evaluation_strategy="steps",
+                    eval_steps=200,
+                    save_strategy="steps",
+                    save_steps=200,
+                    max_grad_norm=1.0,
+                    lr_scheduler_type="cosine_with_restarts",
+                    gradient_checkpointing=True,
+                    fp16=True,
+                    optim="adamw_8bit",
+                    group_by_length=True,
+                    gradient_checkpointing_kwargs={"use_reentrant": False},
+                    dataloader_num_workers=2,
+                    dataloader_pin_memory=True,
+                    load_best_model_at_end=True,
+                    metric_for_best_model="eval_loss",
+                    greater_is_better=False,
+                    eval_accumulation_steps=2,
+                )
 
             # Instead, limit evaluation dataset size directly
             eval_dataset = eval_dataset.select(range(min(20, len(eval_dataset))))
@@ -616,7 +574,7 @@ if __name__ == "__main__":
 
             trainer = CustomTrainer(
                 model=model,
-                args=training_args,
+                args=get_training_args(),
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
                 compute_metrics=compute_metrics,
