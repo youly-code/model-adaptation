@@ -500,7 +500,6 @@ def inference_example(model, tokenizer, prompt: str) -> str:
                 pad_token_id=tokenizer.eos_token_id,
                 bos_token_id=tokenizer.bos_token_id,
                 early_stopping=True,
-                num_beams=4,
                 repetition_penalty=1.3,
                 no_repeat_ngram_size=4,
                 eos_token_id=tokenizer.eos_token_id,
