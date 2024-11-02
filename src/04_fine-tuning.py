@@ -10,6 +10,7 @@ from transformers import (
     LlamaForCausalLM,
     TrainerCallback,
     BitsAndBytesConfig,
+    EarlyStoppingCallback,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import os
@@ -26,6 +27,7 @@ import wandb
 from contextlib import contextmanager
 import re
 import bitsandbytes as bnb
+from huggingface_hub import HfFolder
 
 dotenv.load_dotenv()
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -72,14 +74,13 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
 
 def prepare_fine_tuning():
     """Setup for lower memory usage"""
-    model_name = "unsloth/Llama-3.2-1B-Instruct-bnb-4bit"
+    model_name = "unsloth/Llama-3.2-1B-Instruct"
     
-    # More aggressive QLoRA configuration
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16
+        bnb_4bit_compute_dtype=torch.float16  
     )
 
     # Initialize model with stricter memory constraints
@@ -103,12 +104,12 @@ def prepare_fine_tuning():
     # Prepare model for training
     model = prepare_model_for_kbit_training(model)
     
-    # LoRA configuration
+    # Adjusted LoRA configuration
     lora_config = LoraConfig(
-        r=64,
-        lora_alpha=16,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-        lora_dropout=0.05,
+        r=32,  # Reduced from 64 for better memory efficiency
+        lora_alpha=32,  # Increased from 16 for stronger adaptation
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "down_proj", "up_proj"],  # Added more target modules
+        lora_dropout=0.1,  # Increased dropout for regularization
         bias="none",
         task_type="CAUSAL_LM"
     )
@@ -162,24 +163,40 @@ def filter_quality(example: Dict[str, Any]) -> bool:
     """Filter dataset examples based on quality criteria.
     
     Args:
-        example: Dataset example containing 'output' text
+        example: Dataset example containing 'output' text and quality metrics
         
     Returns:
         bool: True if example meets quality criteria
     """
     text = example['output']
     
-    # Skip empty or very short responses
-    if not text or len(text.split()) < 10:
+    # Extract metrics with more lenient default values
+    complexity = example.get('complexity', 0.5)  # Default to middle value
+    sentiment = example.get('sentiment', -0.5)   # Default to moderately negative
+    word_count = len(text.split())
+    
+    # More lenient quality criteria thresholds
+    MIN_WORD_COUNT = 20    
+    MAX_WORD_COUNT = 256    
+    MIN_COMPLEXITY = 0.4   
+    MAX_COMPLEXITY = 1.0   
+    MIN_SENTIMENT = -0.9  
+    MAX_SENTIMENT = -0.1   
+    
+    # Basic length check
+    if not (MIN_WORD_COUNT <= word_count <= MAX_WORD_COUNT):
         return False
         
-    # Skip responses with excessive special characters
+    # More lenient complexity and sentiment checks
+    if complexity is not None and not (MIN_COMPLEXITY <= complexity <= MAX_COMPLEXITY):
+        return False
+        
+    if sentiment is not None and not (MIN_SENTIMENT <= sentiment <= MAX_SENTIMENT):
+        return False
+    
+    # Simple text quality check - avoid excessive special characters
     special_char_ratio = len(re.findall(r'[^a-zA-Z0-9\s.,!?]', text)) / len(text)
-    if special_char_ratio > 0.1:
-        return False
-        
-    # Skip responses with repetitive patterns
-    if any(text.count(phrase) > 2 for phrase in text.split() if len(phrase) > 3):
+    if special_char_ratio > 0.2:  # Increased from 0.1
         return False
         
     return True
@@ -190,8 +207,10 @@ def prepare_dataset(tokenizer):
     dataset = load_dataset("leonvanbokhorst/synthetic-complaints-v2")
     
     # Reduce validation set size
-    dataset = dataset["train"].select(range(10000))
+    dataset = dataset["train"]
+    print(f"Dataset size: {len(dataset)}")
     filtered_dataset = dataset.filter(filter_quality)
+    print(f"Filtered dataset size: {len(filtered_dataset)}")
     split_dataset = filtered_dataset.train_test_split(test_size=0.05, seed=42)
     
     def prepare_prompt(example):
@@ -276,48 +295,61 @@ def prepare_dataset(tokenizer):
 
 
 def calculate_negativity(text: str) -> float:
-    """Memory-optimized negativity score calculation"""
-    # Use only VADER for sentiment analysis (more memory efficient)
-    # try:
-    #     nltk.data.find("sentiment/vader_lexicon.zip")
-    # except LookupError:
-    #     nltk.download("vader_lexicon", quiet=True)
+    """Calculate negativity score using VADER sentiment analysis"""
+    try:
+        # Ensure VADER lexicon is downloaded
+        try:
+            nltk.data.find("sentiment/vader_lexicon.zip")
+        except LookupError:
+            nltk.download("vader_lexicon", quiet=True)
 
-    # sia = SentimentIntensityAnalyzer()
-    # vader_scores = sia.polarity_scores(text)
+        # Initialize VADER
+        sia = SentimentIntensityAnalyzer()
+        scores = sia.polarity_scores(text)
+        
+        # Convert compound score to 0-1 range where 1 is most negative
+        # VADER compound score is between -1 (most negative) and 1 (most positive)
+        # We convert it to 0 (most positive) to 1 (most negative)
+        negativity = (1 - scores["compound"]) / 2
+        
+        return negativity
 
-    # # Convert compound score to 0-1 range where 1 is most negative
-    # return (vader_scores["compound"] + 1) / 2
-    pass
+    except Exception as e:
+        print(f"Error calculating negativity: {e}")
+        return 0.5  # Return neutral score on error
 
 
 def compute_metrics(eval_preds) -> Dict[str, float]:
-    """Compute custom metrics for complaint quality"""
+    """Compute custom metrics for complaint quality with safer token handling"""
     predictions, labels = eval_preds
     if isinstance(predictions, tuple):
         predictions = predictions[0]
-
-    # Ensure we're working with numpy arrays
-    predictions = predictions.astype(np.int64)
 
     try:
         # Process in batches
         decoded_preds = []
         for pred in predictions:
             try:
-                # Create boolean masks for filtering
-                not_pad_mask = pred != tokenizer.pad_token_id
-                not_ignore_mask = pred != -100
-                valid_tokens_mask = not_pad_mask & not_ignore_mask
-
-                # Filter tokens using the mask
-                valid_tokens = pred[valid_tokens_mask].tolist()
-
+                # Ensure pred is a 1D array/list of tokens
+                if isinstance(pred[0], (list, np.ndarray)):
+                    pred = pred[0]  # Take first sequence if nested
+                
+                # Filter invalid token IDs
+                valid_tokens = [
+                    int(token) for token in pred  # Convert to int
+                    if isinstance(token, (int, np.integer)) and  # Ensure it's a number
+                    0 <= token < tokenizer.vocab_size  # Check range
+                ]
+                
                 # Decode filtered tokens
-                text = tokenizer.decode(valid_tokens, skip_special_tokens=True)
-                decoded_preds.append(text)
+                if valid_tokens:
+                    text = tokenizer.decode(valid_tokens, skip_special_tokens=True)
+                    decoded_preds.append(text)
+                else:
+                    decoded_preds.append("")
+                    
             except Exception as e:
-                print(f"Decoding error: {e}")
+                print(f"Decoding error for single prediction: {e}")
                 decoded_preds.append("")
 
         # Calculate metrics
@@ -326,17 +358,24 @@ def compute_metrics(eval_preds) -> Dict[str, float]:
             if text.strip():  # Only process non-empty strings
                 try:
                     score = calculate_negativity(text)
-                    if isinstance(score, (float, int)):  # Ensure score is a scalar
+                    if isinstance(score, (float, int)):
                         negativity_scores.append(score)
                 except Exception as e:
                     print(f"Scoring error: {e}")
 
         # Return average scores, defaulting to 0 if no valid scores
         avg_negativity = float(np.mean(negativity_scores)) if negativity_scores else 0.0
-        return {"negativity": avg_negativity}
+        return {
+            "negativity": avg_negativity,
+            "valid_samples": len(negativity_scores)
+        }
 
     except Exception as e:
         print(f"Metrics computation error: {e}")
+        return {
+            "negativity": 0.0,
+            "valid_samples": 0
+        }
 
 
 
@@ -362,6 +401,11 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
         learning_rate=5e-5,
         warmup_ratio=0.1,
         weight_decay=0.02,
+        load_best_model_at_end=True,  # Load the best model when training ends
+        metric_for_best_model="eval_loss",  # Use eval loss to determine best model
+        greater_is_better=False,  # Lower loss is better
+        early_stopping_patience=3,  # Stop if no improvement for 3 evaluation rounds
+        early_stopping_threshold=0.01,  # Minimum change to qualify as an improvement
     )
 
     class QualityTestingCallback(TrainerCallback):
@@ -448,7 +492,7 @@ def inference_example(model, tokenizer, prompt: str) -> str:
             outputs = model.generate(
                 input_ids=model_inputs["input_ids"],
                 attention_mask=model_inputs["attention_mask"],
-                max_new_tokens=128,
+                max_new_tokens=256,
                 temperature=0.7,
                 top_p=0.9,
                 do_sample=True,
@@ -535,35 +579,34 @@ if __name__ == "__main__":
                 f"\nTraining with {len(train_dataset)} training samples and {len(eval_dataset)} eval samples"
             )
 
-            # Training arguments optimized for 24GB GPU
+            # Optimized training arguments
             training_args = TrainingArguments(
                 output_dir="./complaint_model",
                 run_name=f"complaint-training-{wandb.util.generate_id()}",
-                num_train_epochs=2,
-                per_device_train_batch_size=8,
-                per_device_eval_batch_size=8,
-                gradient_accumulation_steps=2, # size recommended by HF for 24GB GPU = 1/4 batch size
-                #max_grad_norm=0.5,
-                bf16=True,
-                fp16=False,
-                learning_rate=2e-5,
+                num_train_epochs=3,
+                per_device_train_batch_size=16,
+                per_device_eval_batch_size=16,
+                gradient_accumulation_steps=4,
+                learning_rate=1e-5,
+                warmup_ratio=0.1,
+                weight_decay=0.05,
                 logging_steps=10,
                 evaluation_strategy="steps",
-                eval_steps=200,
+                eval_steps=100,
                 save_strategy="steps",
-                save_steps=200,
-                weight_decay=0.01,
-                report_to="wandb",
-                load_best_model_at_end=True,
-                optim="adamw_torch", 
-                warmup_ratio=0.03,
-                lr_scheduler_type="cosine",
-                group_by_length=True,
+                save_steps=100,
+                max_grad_norm=1.0,
+                lr_scheduler_type="cosine_with_restarts",
                 gradient_checkpointing=True,
-                fp16_full_eval=True,
+                fp16=True,
+                optim="adamw_torch",
+                group_by_length=True,
                 gradient_checkpointing_kwargs={"use_reentrant": False},
-                dataloader_num_workers=2,
+                dataloader_num_workers=4,
                 dataloader_pin_memory=True,
+                load_best_model_at_end=True,
+                metric_for_best_model="eval_loss",
+                greater_is_better=False,
             )
 
             # Simple test prompts
@@ -576,18 +619,37 @@ if __name__ == "__main__":
                 eval_dataset=eval_dataset,
                 compute_metrics=compute_metrics,
                 callbacks=[
-                    ComplaintTestingCallback(test_prompts, tokenizer, every_n_steps=100)
+                    ComplaintTestingCallback(test_prompts, tokenizer, every_n_steps=100),
+                    EarlyStoppingCallback(early_stopping_patience=3)
                 ],
             )
 
             print("\nStarting training... This may take a while. 😁")
             trainer.train()
 
-            # print("\nTesting inference: ")
-            # for test_prompt in test_prompts:
-            #     response = inference_example(model, tokenizer, test_prompt)
-            #     print(f"Prompt: {test_prompt}")
-            #     print(f"Response: {response}")
+            # Add this section to save the adapter
+            print("\nSaving adapter to Hugging Face Hub...")
+            model_name = "unsloth/Llama-3.2-1B-Instruct-bnb-4bit"
+            adapter_name = f"complaint-adapter-{wandb.util.generate_id()}"
+            repo_id = f"leonvanbokhorst/{adapter_name}"
+
+            # Save adapter weights and config
+            model.save_pretrained(
+                f"./complaint_model/{adapter_name}",
+                push_to_hub=True,
+                use_auth_token=HF_TOKEN,
+                repo_id=repo_id
+            )
+            
+            # Save tokenizer
+            tokenizer.save_pretrained(
+                f"./complaint_model/{adapter_name}",
+                push_to_hub=True,
+                use_auth_token=HF_TOKEN,
+                repo_id=repo_id
+            )
+
+            print(f"\nAdapter saved to: https://huggingface.co/{repo_id}")
 
         finally:
             wandb.finish()
