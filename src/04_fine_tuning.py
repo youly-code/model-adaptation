@@ -27,7 +27,7 @@ import wandb
 from contextlib import contextmanager
 import re
 import bitsandbytes as bnb
-from huggingface_hub import HfFolder
+from huggingface_hub import HfFolder, HfApi
 
 dotenv.load_dotenv()
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -36,10 +36,9 @@ alpaca_prompt = """### Instruction:
 {0}
 
 ### Input:
-{1}
 
 ### Response:
-{2}"""
+{1}"""
 
 HF_TOKEN = os.getenv("HF_TOKEN")
 WANDB_API_KEY = os.getenv("WANDB_API_KEY")
@@ -91,20 +90,19 @@ def prepare_fine_tuning():
     # Prepare model for training
     model = prepare_model_for_kbit_training(model)
     
-    # LoRA configuration with more targeted adaptation
+    # Updated LoRA configuration to properly handle embeddings
     lora_config = LoraConfig(
-        r=64,                    # Increased from 32
-        lora_alpha=128,          # Increased for stronger adaptation
+        r=8,
+        lora_alpha=16,
         target_modules=[
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "down_proj", "up_proj",
-            "lm_head"            # Added for better output adaptation
         ],
-        lora_dropout=0.15,       # Increased dropout
+        lora_dropout=0.15,
         bias="none",
         task_type="CAUSAL_LM",
-        fan_in_fan_out=False,    # Added for stability
-        modules_to_save=["embed_tokens", "lm_head"]  # Save important layers
+        fan_in_fan_out=False,
+        modules_to_save=["embed_tokens", "lm_head"]  # This is sufficient to handle embeddings
     )
     
     # Apply LoRA
@@ -169,12 +167,12 @@ def filter_quality(example: Dict[str, Any]) -> bool:
     word_count = len(text.split())
     
     # More lenient quality criteria thresholds
-    MIN_WORD_COUNT = 20    
+    MIN_WORD_COUNT = 10    
     MAX_WORD_COUNT = 256    
-    MIN_COMPLEXITY = 0.4   
+    MIN_COMPLEXITY = 0.2   
     MAX_COMPLEXITY = 1.0   
-    MIN_SENTIMENT = -0.9  
-    MAX_SENTIMENT = -0.1   
+    MIN_SENTIMENT = -1.0  
+    MAX_SENTIMENT = 0.2   
     
     # Basic length check
     if not (MIN_WORD_COUNT <= word_count <= MAX_WORD_COUNT):
@@ -199,7 +197,7 @@ def prepare_dataset(tokenizer):
     """Prepare dataset with Alpaca-style prompt template"""
     dataset = load_dataset("leonvanbokhorst/synthetic-complaints-v2")
     
-    # Reduce validation set size
+    # Use full validation set
     dataset = dataset["train"]
     print(f"Dataset size: {len(dataset)}")
     filtered_dataset = dataset.filter(filter_quality)
@@ -207,14 +205,12 @@ def prepare_dataset(tokenizer):
     split_dataset = filtered_dataset.train_test_split(test_size=0.05, seed=42)
     
     def prepare_prompt(example):
-        """Create Alpaca-style prompt structure"""
-        instruction = "You are a complaining assistant."
-        input_text = f"Tell me about {example['topic']}"
+        """Create simplified prompt structure"""
+        instruction = f"Tell me about {example['topic']}"
         output = example['output']
         
         return {
             "instruction": instruction,
-            "input": input_text,
             "output": output
         }
     
@@ -225,18 +221,16 @@ def prepare_dataset(tokenizer):
     first_example = train_dataset[0]
     formatted_prompt = alpaca_prompt.format(
         first_example["instruction"],
-        first_example["input"],
         first_example["output"]
     )
     print("\nFirst training prompt:")
     print(formatted_prompt)
 
     def tokenize_function(examples):
-        """Tokenize using Alpaca template with proper labels"""
+        """Tokenize using simplified template with proper labels"""
         texts = [
             alpaca_prompt.format(
                 examples["instruction"][i],
-                examples["input"][i],
                 examples["output"][i]
             ) + tokenizer.eos_token
             for i in range(len(examples["instruction"]))
@@ -287,98 +281,28 @@ def prepare_dataset(tokenizer):
     return tokenized_train, tokenized_eval
 
 
-def calculate_negativity(text: str) -> float:
-    """Calculate negativity score using VADER sentiment analysis"""
-    try:
-        # Ensure VADER lexicon is downloaded
-        try:
-            nltk.data.find("sentiment/vader_lexicon.zip")
-        except LookupError:
-            nltk.download("vader_lexicon", quiet=True)
-
-        # Initialize VADER
-        sia = SentimentIntensityAnalyzer()
-        scores = sia.polarity_scores(text)
-        return (1 - scores["compound"]) / 2
-
-    except Exception as e:
-        print(f"Error calculating negativity: {e}")
-        return 0.5  # Return neutral score on error
-
-
-def compute_metrics(eval_preds) -> Dict[str, float]:
-    """Compute custom metrics for complaint quality"""
-    predictions, labels = eval_preds
-    if isinstance(predictions, tuple):
-        predictions = predictions[0]
-    
-    # Decode predictions in smaller batches to prevent OOM
-    decoded_preds = []
-    batch_size = 32
-    for i in range(0, len(predictions), batch_size):
-        batch = predictions[i:i + batch_size]
-        texts = tokenizer.batch_decode(batch, skip_special_tokens=True)
-        # Extract only response parts
-        texts = [t.split("### Response:")[-1].strip() if "### Response:" in t else t for t in texts]
-        decoded_preds.extend(texts)
-
-    # Calculate multiple metrics
-    metrics = {
-        "negativity": 0.0,
-        "avg_length": 0.0,
-        "complaint_score": 0.0
-    }
-    
-    valid_samples = 0
-    for text in decoded_preds:
-        if not text.strip():
-            continue
-            
-        valid_samples += 1
-        metrics["negativity"] += calculate_negativity(text)
-        metrics["avg_length"] += len(text.split())
-        # Add simple complaint detection (keywords/phrases)
-        complaint_indicators = ['frustrated', 'annoying', "can't stand", 'tired of', 'sick of']
-        metrics["complaint_score"] += any(phrase in text.lower() for phrase in complaint_indicators)
-
-    # Average the metrics
-    if valid_samples > 0:
-        for key in metrics:
-            metrics[key] /= valid_samples
-        metrics["valid_samples"] = valid_samples
-        
-    return metrics
-
-
 def train_model(model, tokenizer, train_dataset, eval_dataset):
     """Training with proper configuration for stable generation"""
     training_args = TrainingArguments(
         output_dir="./complaint_model",
         num_train_epochs=2,
-        # Reduce batch sizes significantly
-        per_device_train_batch_size=2,  # Reduced from 4
-        per_device_eval_batch_size=1,   # Keep at 1
-        gradient_accumulation_steps=4,   # Increased from 2
-        eval_steps=1000,                # Increased evaluation interval
+        per_device_train_batch_size=2,
+        per_device_eval_batch_size=1,
+        gradient_accumulation_steps=4,
+        eval_steps=1000,
         max_steps=2000,
         evaluation_strategy="steps",
-        # Memory optimizations
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         max_grad_norm=0.5,
-        # Evaluation optimizations
-        eval_accumulation_steps=2,      # Reduced from 4
-        # Add memory optimization flags
-        fp16=True,                      # Enable mixed precision
-        optim="adamw_8bit",            # Use 8-bit optimizer
-        max_eval_samples=100,           # Limit evaluation samples
-        # Conservative learning settings
+        eval_accumulation_steps=2,
+        fp16=True,
+        optim="adamw_8bit",
+        max_eval_samples=100,
         learning_rate=5e-5,
-        warmup_ratio=0.1,
+        warmup_ratio=0.2,
         weight_decay=0.02,
         load_best_model_at_end=True,
-        metric_for_best_model="eval_loss",
-        greater_is_better=False,
         early_stopping_patience=3,
         early_stopping_threshold=0.01,
     )
@@ -388,7 +312,6 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        compute_metrics=compute_metrics,
         callbacks=[ComplaintTestingCallback(test_prompts, tokenizer, every_n_steps=100)],
     )
 
@@ -415,13 +338,12 @@ def inference_mode(model):
 
 
 def inference_example(model, tokenizer, prompt: str) -> str:
-    """Generate responses with Alpaca-style prompting"""
+    """Generate responses with simplified prompting"""
     try:
         device = model.device
         
-        # Format prompt using Alpaca template
+        # Format prompt using simplified template
         formatted_prompt = alpaca_prompt.format(
-            "You are a complaining assistant.",
             prompt,
             ""  # Empty response section for generation
         )
@@ -431,7 +353,7 @@ def inference_example(model, tokenizer, prompt: str) -> str:
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=256,
+            max_length=512,
             return_token_type_ids=False
         ).to(device)
 
@@ -439,18 +361,16 @@ def inference_example(model, tokenizer, prompt: str) -> str:
             outputs = model.generate(
                 input_ids=model_inputs["input_ids"],
                 attention_mask=model_inputs["attention_mask"],
-                max_new_tokens=256,
+                max_new_tokens=1024,
                 temperature=0.7,
                 top_p=0.9,
                 do_sample=True,
                 num_return_sequences=1,
                 pad_token_id=tokenizer.eos_token_id,
                 bos_token_id=tokenizer.bos_token_id,
-                early_stopping=True,
-                repetition_penalty=1.3,
-                no_repeat_ngram_size=4,
+                repetition_penalty=1.5,
+                no_repeat_ngram_size=3,
                 eos_token_id=tokenizer.eos_token_id,
-                length_penalty=1.0,
             )
 
         # Update response extraction
@@ -520,6 +440,10 @@ if __name__ == "__main__":
             # Setup
             model, tokenizer = prepare_fine_tuning()
             train_dataset, eval_dataset = prepare_dataset(tokenizer)
+            
+            # Limit dataset sizes for testing
+            # train_dataset = train_dataset.select(range(1000))
+            # eval_dataset = eval_dataset.select(range(100))
 
             print(
                 f"\nTraining with {len(train_dataset)} training samples and {len(eval_dataset)} eval samples"
@@ -531,18 +455,18 @@ if __name__ == "__main__":
                 return TrainingArguments(
                     output_dir="./complaint_model",
                     run_name=run_name or f"complaint-training-{wandb.util.generate_id()}",
-                    num_train_epochs=3,
+                    num_train_epochs=2,
                     per_device_train_batch_size=16,
                     per_device_eval_batch_size=1,
                     gradient_accumulation_steps=8,
-                    learning_rate=1e-5,
-                    warmup_ratio=0.1,
+                    learning_rate=5e-5,
+                    warmup_ratio=0.2,
                     weight_decay=0.05,
-                    logging_steps=50,
-                    evaluation_strategy="steps",
-                    eval_steps=200,
+                    logging_steps=10,
+                    eval_strategy="steps",
+                    eval_steps=100,
                     save_strategy="steps",
-                    save_steps=200,
+                    save_steps=100,
                     max_grad_norm=1.0,
                     lr_scheduler_type="cosine_with_restarts",
                     gradient_checkpointing=True,
@@ -558,18 +482,11 @@ if __name__ == "__main__":
                     eval_accumulation_steps=2,
                 )
 
-            # Instead, limit evaluation dataset size directly
-            eval_dataset = eval_dataset.select(range(min(20, len(eval_dataset))))
-
             # Simple test prompts
             test_prompts = [
-                "Tell me about your morning commute",
-                "What do you think about customer service these days?",
+                "Tell me about your morning coffee",
                 "How's the weather?",
                 "Tell me about your neighbor's habits",
-                "What's your experience with public transportation?",
-                "How do you feel about waiting in lines?",
-                "Tell me about restaurant service",
                 "What's your opinion on modern workplace culture?",
             ]
 
@@ -578,7 +495,6 @@ if __name__ == "__main__":
                 args=get_training_args(),
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
-                compute_metrics=compute_metrics,
                 callbacks=[
                     ComplaintTestingCallback(test_prompts, tokenizer, every_n_steps=100),
                     EarlyStoppingCallback(early_stopping_patience=3)
@@ -588,26 +504,39 @@ if __name__ == "__main__":
             print("\nStarting training... This may take a while. 😁")
             trainer.train()
 
-            # Add this section to save the adapter
+            # Updated saving section
             print("\nSaving adapter to Hugging Face Hub...")
             model_name = "unsloth/Llama-3.2-1B-Instruct-bnb-4bit"
-            adapter_name = f"complaint-adapter-{wandb.util.generate_id()}"
+            adapter_name = f"Llama-3.2-1B-Instruct-complaint-adapter"
             repo_id = f"leonvanbokhorst/{adapter_name}"
 
-            # Save adapter weights and config
+            # First save locally
+            local_save_dir = f"./complaint_model/{adapter_name}"
             model.save_pretrained(
-                f"./complaint_model/{adapter_name}",
-                push_to_hub=True,
-                use_auth_token=HF_TOKEN,
-                repo_id=repo_id
+                local_save_dir,
+                safe_serialization=True,  # Use safetensors format
             )
             
-            # Save tokenizer
-            tokenizer.save_pretrained(
-                f"./complaint_model/{adapter_name}",
-                push_to_hub=True,
-                use_auth_token=HF_TOKEN,
-                repo_id=repo_id
+            # Save tokenizer configuration locally
+            tokenizer.save_pretrained(local_save_dir)
+
+            # Create repository
+            api = HfApi()
+            try:
+                api.create_repo(
+                    repo_id=repo_id,
+                    exist_ok=True,
+                    token=HF_TOKEN
+                )
+            except Exception as e:
+                print(f"Repository creation error (may already exist): {e}")
+
+            # Upload all files from local directory
+            api.upload_folder(
+                folder_path=local_save_dir,
+                repo_id=repo_id,
+                repo_type="model",
+                token=HF_TOKEN
             )
 
             print(f"\nAdapter saved to: https://huggingface.co/{repo_id}")
