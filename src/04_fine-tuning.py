@@ -73,14 +73,15 @@ def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
 
 
 def prepare_fine_tuning():
-    """Setup for lower memory usage"""
+    """Setup for model fine-tuning with improved configuration"""
     model_name = "unsloth/Llama-3.2-1B-Instruct"
     
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16  
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_quant_storage=torch.bfloat16  # Added for better precision
     )
 
     # Initialize model with stricter memory constraints
@@ -104,14 +105,20 @@ def prepare_fine_tuning():
     # Prepare model for training
     model = prepare_model_for_kbit_training(model)
     
-    # Adjusted LoRA configuration
+    # LoRA configuration with more targeted adaptation
     lora_config = LoraConfig(
-        r=32,  # Reduced from 64 for better memory efficiency
-        lora_alpha=32,  # Increased from 16 for stronger adaptation
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "down_proj", "up_proj"],  # Added more target modules
-        lora_dropout=0.1,  # Increased dropout for regularization
+        r=64,                    # Increased from 32
+        lora_alpha=128,          # Increased for stronger adaptation
+        target_modules=[
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "down_proj", "up_proj",
+            "lm_head"            # Added for better output adaptation
+        ],
+        lora_dropout=0.15,       # Increased dropout
         bias="none",
-        task_type="CAUSAL_LM"
+        task_type="CAUSAL_LM",
+        fan_in_fan_out=False,    # Added for stability
+        modules_to_save=["embed_tokens", "lm_head"]  # Save important layers
     )
     
     # Apply LoRA
@@ -314,62 +321,47 @@ def calculate_negativity(text: str) -> float:
 
 
 def compute_metrics(eval_preds) -> Dict[str, float]:
-    """Compute custom metrics for complaint quality with safer token handling"""
+    """Compute custom metrics for complaint quality"""
     predictions, labels = eval_preds
     if isinstance(predictions, tuple):
         predictions = predictions[0]
+    
+    # Decode predictions in smaller batches to prevent OOM
+    decoded_preds = []
+    batch_size = 32
+    for i in range(0, len(predictions), batch_size):
+        batch = predictions[i:i + batch_size]
+        texts = tokenizer.batch_decode(batch, skip_special_tokens=True)
+        # Extract only response parts
+        texts = [t.split("### Response:")[-1].strip() if "### Response:" in t else t for t in texts]
+        decoded_preds.extend(texts)
 
-    try:
-        # Process in batches
-        decoded_preds = []
-        for pred in predictions:
-            try:
-                # Ensure pred is a 1D array/list of tokens
-                if isinstance(pred[0], (list, np.ndarray)):
-                    pred = pred[0]  # Take first sequence if nested
-                
-                # Filter invalid token IDs
-                valid_tokens = [
-                    int(token) for token in pred  # Convert to int
-                    if isinstance(token, (int, np.integer)) and  # Ensure it's a number
-                    0 <= token < tokenizer.vocab_size  # Check range
-                ]
-                
-                # Decode filtered tokens
-                if valid_tokens:
-                    text = tokenizer.decode(valid_tokens, skip_special_tokens=True)
-                    decoded_preds.append(text)
-                else:
-                    decoded_preds.append("")
-                    
-            except Exception as e:
-                print(f"Decoding error for single prediction: {e}")
-                decoded_preds.append("")
+    # Calculate multiple metrics
+    metrics = {
+        "negativity": 0.0,
+        "avg_length": 0.0,
+        "complaint_score": 0.0
+    }
+    
+    valid_samples = 0
+    for text in decoded_preds:
+        if not text.strip():
+            continue
+            
+        valid_samples += 1
+        metrics["negativity"] += calculate_negativity(text)
+        metrics["avg_length"] += len(text.split())
+        # Add simple complaint detection (keywords/phrases)
+        complaint_indicators = ['frustrated', 'annoying', "can't stand", 'tired of', 'sick of']
+        metrics["complaint_score"] += any(phrase in text.lower() for phrase in complaint_indicators)
 
-        # Calculate metrics
-        negativity_scores = []
-        for text in decoded_preds:
-            if text.strip():  # Only process non-empty strings
-                try:
-                    score = calculate_negativity(text)
-                    if isinstance(score, (float, int)):
-                        negativity_scores.append(score)
-                except Exception as e:
-                    print(f"Scoring error: {e}")
-
-        # Return average scores, defaulting to 0 if no valid scores
-        avg_negativity = float(np.mean(negativity_scores)) if negativity_scores else 0.0
-        return {
-            "negativity": avg_negativity,
-            "valid_samples": len(negativity_scores)
-        }
-
-    except Exception as e:
-        print(f"Metrics computation error: {e}")
-        return {
-            "negativity": 0.0,
-            "valid_samples": 0
-        }
+    # Average the metrics
+    if valid_samples > 0:
+        for key in metrics:
+            metrics[key] /= valid_samples
+        metrics["valid_samples"] = valid_samples
+        
+    return metrics
 
 
 
@@ -612,7 +604,16 @@ if __name__ == "__main__":
             eval_dataset = eval_dataset.select(range(min(20, len(eval_dataset))))
 
             # Simple test prompts
-            test_prompts = ["modern technology", "social media", "cats"]
+            test_prompts = [
+                "Tell me about your morning commute",
+                "What do you think about customer service these days?",
+                "How's the weather?",
+                "Tell me about your neighbor's habits",
+                "What's your experience with public transportation?",
+                "How do you feel about waiting in lines?",
+                "Tell me about restaurant service",
+                "What's your opinion on modern workplace culture?",
+            ]
 
             trainer = CustomTrainer(
                 model=model,
