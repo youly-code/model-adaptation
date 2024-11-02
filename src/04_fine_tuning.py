@@ -427,7 +427,7 @@ class CustomTrainer(Trainer):
 # For testing, let's use fewer prompts
 if __name__ == "__main__":
     FINETUNING = True
-    TESTING = False
+    TESTING = True
 
     if FINETUNING:
         try:
@@ -435,8 +435,8 @@ if __name__ == "__main__":
             model, tokenizer = prepare_fine_tuning()
             train_dataset, eval_dataset = prepare_dataset(tokenizer)
             
+            # Limit dataset sizes for testing
             if TESTING:
-                # Limit dataset sizes for testing
                 train_dataset = train_dataset.select(range(1000))
                 eval_dataset = eval_dataset.select(range(100))
 
@@ -499,20 +499,22 @@ if __name__ == "__main__":
             print("\nStarting training... This may take a while. 😁")
             trainer.train()
 
-            # Updated saving section
-            print("\nSaving adapter to Hugging Face Hub...")
-            model_name = "unsloth/Llama-3.2-1B-Instruct-bnb-4bit"
-            adapter_name = f"Llama-3.2-1B-Instruct-complaint-adapter"
+            # Updated saving section for LoRA adapter only
+            print("\nSaving LoRA adapter to Hugging Face Hub...")
+            adapter_name = "Llama-3.2-1B-Instruct-complaint-adapter"
             repo_id = f"leonvanbokhorst/{adapter_name}"
 
-            # First save locally
+            # First save adapter locally
             local_save_dir = f"./complaint_model/{adapter_name}"
-            model.save_pretrained(
+            
+            # Save only the LoRA adapter weights and config
+            model.save_adapter(
                 local_save_dir,
-                safe_serialization=True,  # Use safetensors format
+                adapter_name="default"  # The default adapter name used by PEFT
             )
             
-            # Save tokenizer configuration locally
+            # Save config files
+            model.config.save_pretrained(local_save_dir)
             tokenizer.save_pretrained(local_save_dir)
 
             # Create repository
@@ -526,7 +528,7 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"Repository creation error (may already exist): {e}")
 
-            # Upload all files from local directory
+            # Upload adapter files
             api.upload_folder(
                 folder_path=local_save_dir,
                 repo_id=repo_id,
@@ -534,7 +536,7 @@ if __name__ == "__main__":
                 token=HF_TOKEN
             )
 
-            print(f"\nAdapter saved to: https://huggingface.co/{repo_id}")
+            print(f"\nLoRA adapter saved to: https://huggingface.co/{repo_id}")
 
         finally:
             wandb.finish()
