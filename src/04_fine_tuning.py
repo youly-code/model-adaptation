@@ -5,9 +5,6 @@ from transformers import (
     AutoTokenizer,
     TrainingArguments,
     Trainer,
-    DataCollatorForLanguageModeling,
-    LlamaTokenizer,
-    LlamaForCausalLM,
     TrainerCallback,
     BitsAndBytesConfig,
     EarlyStoppingCallback,
@@ -16,13 +13,8 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import os
 import dotenv
 import torch
-import random
 from dataclasses import dataclass
 from typing import List, Dict, Any
-import numpy as np
-from textblob import TextBlob
-from nltk.sentiment import SentimentIntensityAnalyzer
-import nltk
 import wandb
 from contextlib import contextmanager
 import re
@@ -36,6 +28,7 @@ alpaca_prompt = """### Instruction:
 {0}
 
 ### Input:
+
 
 ### Response:
 {1}"""
@@ -434,6 +427,7 @@ class CustomTrainer(Trainer):
 # For testing, let's use fewer prompts
 if __name__ == "__main__":
     FINETUNING = True
+    TESTING = False
 
     if FINETUNING:
         try:
@@ -441,9 +435,10 @@ if __name__ == "__main__":
             model, tokenizer = prepare_fine_tuning()
             train_dataset, eval_dataset = prepare_dataset(tokenizer)
             
-            # Limit dataset sizes for testing
-            # train_dataset = train_dataset.select(range(1000))
-            # eval_dataset = eval_dataset.select(range(100))
+            if TESTING:
+                # Limit dataset sizes for testing
+                train_dataset = train_dataset.select(range(1000))
+                eval_dataset = eval_dataset.select(range(100))
 
             print(
                 f"\nTraining with {len(train_dataset)} training samples and {len(eval_dataset)} eval samples"
