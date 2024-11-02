@@ -226,7 +226,7 @@ def prepare_dataset(tokenizer):
         }
     
     train_dataset = split_dataset["train"].map(prepare_prompt)
-    eval_dataset = split_dataset["test"].select(range(10)).map(prepare_prompt)
+    eval_dataset = split_dataset["test"].map(prepare_prompt)
 
     # Print first example before tokenization
     first_example = train_dataset[0]
@@ -378,28 +378,32 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
     training_args = TrainingArguments(
         output_dir="./complaint_model",
         num_train_epochs=2,
-        # Reduce validation batch size and frequency
-        per_device_train_batch_size=4,
-        per_device_eval_batch_size=1,  # Smaller eval batch size
-        gradient_accumulation_steps=2,
-        eval_steps=500,  # Increase steps between validations
+        # Reduce batch sizes significantly
+        per_device_train_batch_size=2,  # Reduced from 4
+        per_device_eval_batch_size=1,   # Keep at 1
+        gradient_accumulation_steps=4,   # Increased from 2
+        eval_steps=1000,                # Increased evaluation interval
         max_steps=2000,
         evaluation_strategy="steps",
         # Memory optimizations
         gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False}, 
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         max_grad_norm=0.5,
         # Evaluation optimizations
-        eval_accumulation_steps=4,  # Add this to accumulate eval batches
+        eval_accumulation_steps=2,      # Reduced from 4
+        # Add memory optimization flags
+        fp16=True,                      # Enable mixed precision
+        optim="adamw_8bit",            # Use 8-bit optimizer
+        max_eval_samples=100,           # Limit evaluation samples
         # Conservative learning settings
         learning_rate=5e-5,
         warmup_ratio=0.1,
         weight_decay=0.02,
-        load_best_model_at_end=True,  # Load the best model when training ends
-        metric_for_best_model="eval_loss",  # Use eval loss to determine best model
-        greater_is_better=False,  # Lower loss is better
-        early_stopping_patience=3,  # Stop if no improvement for 3 evaluation rounds
-        early_stopping_threshold=0.01,  # Minimum change to qualify as an improvement
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        early_stopping_patience=3,
+        early_stopping_threshold=0.01,
     )
 
     class QualityTestingCallback(TrainerCallback):
@@ -577,30 +581,35 @@ if __name__ == "__main__":
                 output_dir="./complaint_model",
                 run_name=f"complaint-training-{wandb.util.generate_id()}",
                 num_train_epochs=3,
-                per_device_train_batch_size=16,
-                per_device_eval_batch_size=16,
-                gradient_accumulation_steps=4,
+                per_device_train_batch_size=16,     
+                per_device_eval_batch_size=1,      
+                gradient_accumulation_steps=8,     
                 learning_rate=1e-5,
                 warmup_ratio=0.1,
                 weight_decay=0.05,
-                logging_steps=10,
+                logging_steps=50,                  
                 evaluation_strategy="steps",
-                eval_steps=100,
+                eval_steps=200,                    
                 save_strategy="steps",
-                save_steps=100,
+                save_steps=200,                    
                 max_grad_norm=1.0,
                 lr_scheduler_type="cosine_with_restarts",
                 gradient_checkpointing=True,
                 fp16=True,
-                optim="adamw_torch",
+                optim="adamw_8bit",               
                 group_by_length=True,
                 gradient_checkpointing_kwargs={"use_reentrant": False},
-                dataloader_num_workers=4,
+                dataloader_num_workers=2,          
                 dataloader_pin_memory=True,
                 load_best_model_at_end=True,
                 metric_for_best_model="eval_loss",
                 greater_is_better=False,
+                # Memory optimization parameters
+                eval_accumulation_steps=2,
             )
+
+            # Instead, limit evaluation dataset size directly
+            eval_dataset = eval_dataset.select(range(min(20, len(eval_dataset))))
 
             # Simple test prompts
             test_prompts = ["modern technology", "social media", "cats"]
