@@ -72,7 +72,6 @@ def prepare_fine_tuning():
         model_name,
         quantization_config=bnb_config,
         device_map="auto",
-        trust_remote_code=True,
         token=HF_TOKEN,
         torch_dtype=torch.bfloat16,
     )
@@ -160,12 +159,12 @@ def filter_quality(example: Dict[str, Any]) -> bool:
     word_count = len(text.split())
     
     # More lenient quality criteria thresholds
-    MIN_WORD_COUNT = 10    
+    MIN_WORD_COUNT = 12    
     MAX_WORD_COUNT = 256    
-    MIN_COMPLEXITY = 0.2   
+    MIN_COMPLEXITY = 0.1   
     MAX_COMPLEXITY = 1.0   
-    MIN_SENTIMENT = -1.0  
-    MAX_SENTIMENT = 0.2   
+    MIN_SENTIMENT = -0.9  
+    MAX_SENTIMENT = 0.5   
     
     # Basic length check
     if not (MIN_WORD_COUNT <= word_count <= MAX_WORD_COUNT):
@@ -190,8 +189,8 @@ def prepare_dataset(tokenizer):
     """Prepare dataset with Alpaca-style prompt template"""
     dataset = load_dataset("leonvanbokhorst/synthetic-complaints-v2")
     
-    # Use full validation set
-    dataset = dataset["train"]
+    # Use full validation set and shuffle
+    dataset = dataset["train"].shuffle(seed=42)
     print(f"Dataset size: {len(dataset)}")
     filtered_dataset = dataset.filter(filter_quality)
     print(f"Filtered dataset size: {len(filtered_dataset)}")
@@ -279,9 +278,9 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
     training_args = TrainingArguments(
         output_dir="./complaint_model",
         num_train_epochs=2,
-        per_device_train_batch_size=2,
+        per_device_train_batch_size=16,
         per_device_eval_batch_size=1,
-        gradient_accumulation_steps=4,
+        gradient_accumulation_steps=8,
         eval_steps=1000,
         max_steps=2000,
         evaluation_strategy="steps",
@@ -293,7 +292,7 @@ def train_model(model, tokenizer, train_dataset, eval_dataset):
         optim="adamw_8bit",
         max_eval_samples=100,
         learning_rate=5e-5,
-        warmup_ratio=0.2,
+        warmup_ratio=0.5,
         weight_decay=0.02,
         load_best_model_at_end=True,
         early_stopping_patience=3,
@@ -346,7 +345,7 @@ def inference_example(model, tokenizer, prompt: str) -> str:
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=512,
+            max_length=256,
             return_token_type_ids=False
         ).to(device)
 
@@ -354,7 +353,7 @@ def inference_example(model, tokenizer, prompt: str) -> str:
             outputs = model.generate(
                 input_ids=model_inputs["input_ids"],
                 attention_mask=model_inputs["attention_mask"],
-                max_new_tokens=1024,
+                max_new_tokens=256,
                 temperature=0.7,
                 top_p=0.9,
                 do_sample=True,
@@ -424,10 +423,104 @@ class CustomTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
+def save_lora_adapter(
+    model, 
+    tokenizer, 
+    save_dir: str, 
+    repo_id: str, 
+    hf_token: str
+) -> None:
+    """Save LoRA adapter locally and upload to Hugging Face Hub.
+    
+    Args:
+        model: The trained PEFT model
+        tokenizer: The tokenizer used for training
+        save_dir: Local directory to save adapter files
+        repo_id: Hugging Face Hub repository ID (username/repo_name)
+        hf_token: Hugging Face API token
+        
+    The LoRA (Low-Rank Adaptation) adapter contains:
+    1. LoRA A matrices: Low-dimensional projection matrices (hidden_dim → rank)
+    2. LoRA B matrices: Low-dimensional reconstruction matrices (rank → hidden_dim)
+    3. Scaling factors: Applied during inference
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Get only the LoRA parameters with detailed filtering
+    lora_state_dict = {
+        k: v.to("cpu") 
+        for k, v in model.state_dict().items()
+        if any(substr in k for substr in [
+            'lora_A',    # Low-rank projection matrices
+            'lora_B',    # Low-rank reconstruction matrices
+            'lora_embedding_A',  # For embedding layers if used
+            'lora_embedding_B',  # For embedding layers if used
+            'lora_scaling'       # Scaling factors
+        ])
+    }
+    
+    # Print detailed information about saved parameters
+    print(f"\nLoRA Adapter Statistics:")
+    print(f"Number of LoRA parameters: {len(lora_state_dict)}")
+    print(f"Parameter names (first 5): {list(lora_state_dict.keys())[:5]}")
+    
+    total_params = sum(v.numel() for v in lora_state_dict.values())
+    total_size_mb = sum(v.nelement() * v.element_size() for v in lora_state_dict.values()) / (1024 * 1024)
+    print(f"Total parameters: {total_params:,}")
+    print(f"Adapter size: {total_size_mb:.2f}MB")
+    
+    # Save only the LoRA state dict
+    adapter_path = os.path.join(save_dir, "adapter_model.bin")
+    torch.save(
+        lora_state_dict,
+        adapter_path
+    )
+    print(f"\nAdapter saved to: {adapter_path}")
+    
+    # Save the configs
+    if hasattr(model, 'config'):
+        model.config.save_pretrained(save_dir)
+    
+    if hasattr(model, 'peft_config'):
+        model.peft_config['default'].save_pretrained(save_dir)
+    
+    # Save tokenizer configuration
+    tokenizer.save_pretrained(save_dir)
+
+    # Create repository and upload
+    api = HfApi()
+    try:
+        api.create_repo(
+            repo_id=repo_id,
+            exist_ok=True,
+            token=hf_token
+        )
+        
+        # Upload adapter files
+        api.upload_folder(
+            folder_path=save_dir,
+            repo_id=repo_id,
+            repo_type="model",
+            token=hf_token
+        )
+        
+        print(f"\nLoRA adapter uploaded to: https://huggingface.co/{repo_id}")
+        print("\nAdapter can be loaded with:")
+        print(f"""
+from peft import PeftModel, PeftConfig
+config = PeftConfig.from_pretrained("{repo_id}")
+model = AutoModelForCausalLM.from_pretrained(config.base_model_name_or_path)
+model = PeftModel.from_pretrained(model, "{repo_id}")
+        """)
+        
+    except Exception as e:
+        print(f"Upload error: {str(e)}")
+
+
 # For testing, let's use fewer prompts
 if __name__ == "__main__":
     FINETUNING = True
-    TESTING = True
+    TESTING = False
 
     if FINETUNING:
         try:
@@ -454,8 +547,8 @@ if __name__ == "__main__":
                     per_device_train_batch_size=16,
                     per_device_eval_batch_size=1,
                     gradient_accumulation_steps=8,
-                    learning_rate=5e-5,
-                    warmup_ratio=0.2,
+                    learning_rate=1e-4,
+                    warmup_ratio=0.5,
                     weight_decay=0.05,
                     logging_steps=10,
                     eval_strategy="steps",
@@ -475,15 +568,19 @@ if __name__ == "__main__":
                     metric_for_best_model="eval_loss",
                     greater_is_better=False,
                     eval_accumulation_steps=2,
+                    seed=42,
+                    dataloader_drop_last=True,
                 )
 
             # Simple test prompts
             test_prompts = [
-                "Tell me about your morning coffee",
-                "How's the weather?",
+                "How's the weather?", 
                 "Tell me about your neighbor's habits",
                 "What's your opinion on modern workplace culture?",
+                "What's your favorite book?",
+                "Tell me about your favorite vacation spot"
             ]
+
 
             trainer = CustomTrainer(
                 model=model,
@@ -499,44 +596,18 @@ if __name__ == "__main__":
             print("\nStarting training... This may take a while. 😁")
             trainer.train()
 
-            # Updated saving section for LoRA adapter only
-            print("\nSaving LoRA adapter to Hugging Face Hub...")
+            # After training completes
             adapter_name = "Llama-3.2-1B-Instruct-complaint-adapter"
             repo_id = f"leonvanbokhorst/{adapter_name}"
-
-            # First save adapter locally
             local_save_dir = f"./complaint_model/{adapter_name}"
             
-            # Save only the LoRA adapter weights and config
-            model.save_adapter(
-                local_save_dir,
-                adapter_name="default"  # The default adapter name used by PEFT
-            )
-            
-            # Save config files
-            model.config.save_pretrained(local_save_dir)
-            tokenizer.save_pretrained(local_save_dir)
-
-            # Create repository
-            api = HfApi()
-            try:
-                api.create_repo(
-                    repo_id=repo_id,
-                    exist_ok=True,
-                    token=HF_TOKEN
-                )
-            except Exception as e:
-                print(f"Repository creation error (may already exist): {e}")
-
-            # Upload adapter files
-            api.upload_folder(
-                folder_path=local_save_dir,
+            save_lora_adapter(
+                model=model,
+                tokenizer=tokenizer,
+                save_dir=local_save_dir,
                 repo_id=repo_id,
-                repo_type="model",
-                token=HF_TOKEN
+                hf_token=HF_TOKEN
             )
-
-            print(f"\nLoRA adapter saved to: https://huggingface.co/{repo_id}")
 
         finally:
             wandb.finish()
