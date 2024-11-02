@@ -70,10 +70,10 @@ def prepare_fine_tuning():
     # Initialize model with stricter memory constraints
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        quantization_config=bnb_config,
+        #quantization_config=bnb_config,
         device_map="auto",
         token=HF_TOKEN,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
     )
 
     # Use consolidated tokenizer initialization
@@ -110,15 +110,6 @@ def prepare_fine_tuning():
     model.config.use_cache = False
 
     return model, tokenizer
-
-
-@dataclass
-class ComplaintMetrics:
-    """Metrics for complaint quality"""
-
-    negativity: float
-    coherence: float
-    diversity: float
 
 
 class ComplaintTestingCallback(TrainerCallback):
@@ -643,12 +634,20 @@ if __name__ == "__main__":
 
             # After training, merge the LoRA weights and save the full model
             print("\nMerging LoRA weights and saving full model...")
-            model = model.merge_and_unload()  # This merges LoRA weights with base model
+            # First merge the LoRA weights
+            model = model.merge_and_unload()
 
-            # Convert to float16 for storage (better than 4-bit without being too large)
-            model = model.to(torch.float16)
+            # Save and reload the model in float16 instead of direct conversion
+            temp_path = "./complaint_model/temp_merged"
+            model.save_pretrained(temp_path)
+            
+            model = AutoModelForCausalLM.from_pretrained(
+                temp_path,
+                torch_dtype=torch.float16,
+                device_map="auto"
+            )
 
-            # Save the merged model
+            # Continue with Hub upload
             model_name = "unsloth/Llama-3.2-1B-Instruct"
             merged_name = "Llama-3.2-1B-Instruct-Complaint"
             repo_id = f"leonvanbokhorst/{merged_name}"
@@ -659,7 +658,7 @@ if __name__ == "__main__":
                 push_to_hub=True,
                 use_auth_token=HF_TOKEN,
                 repo_id=repo_id,
-                safe_serialization=True,  # Use safetensors format
+                safe_serialization=True,
             )
 
             # Save tokenizer
