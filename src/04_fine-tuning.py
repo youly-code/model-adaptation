@@ -306,13 +306,7 @@ def calculate_negativity(text: str) -> float:
         # Initialize VADER
         sia = SentimentIntensityAnalyzer()
         scores = sia.polarity_scores(text)
-        
-        # Convert compound score to 0-1 range where 1 is most negative
-        # VADER compound score is between -1 (most negative) and 1 (most positive)
-        # We convert it to 0 (most positive) to 1 (most negative)
-        negativity = (1 - scores["compound"]) / 2
-        
-        return negativity
+        return (1 - scores["compound"]) / 2
 
     except Exception as e:
         print(f"Error calculating negativity: {e}")
