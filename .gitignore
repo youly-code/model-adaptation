@@ -13,6 +13,8 @@ wandb/
 .venv/
 Python*/
 results/
+llama.cpp/
+gguf/
 
 
 
