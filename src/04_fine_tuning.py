@@ -82,13 +82,11 @@ def prepare_fine_tuning():
             "gate_proj",
             "down_proj",
             "up_proj",
-            "lm_head"
         ],
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
         inference_mode=False,
-        modules_to_save=["embed_tokens"],
     )
 
     # Apply LoRA
@@ -149,10 +147,10 @@ def filter_quality(example: Dict[str, Any]) -> bool:
     # More lenient quality criteria thresholds
     MIN_WORD_COUNT = 12
     MAX_WORD_COUNT = 256
-    MIN_COMPLEXITY = 0.1
+    MIN_COMPLEXITY = 0.4
     MAX_COMPLEXITY = 1.0
     MIN_SENTIMENT = -0.9
-    MAX_SENTIMENT = 0.5
+    MAX_SENTIMENT = 0.0
 
     # Basic length check
     if not (MIN_WORD_COUNT <= word_count <= MAX_WORD_COUNT):
@@ -184,7 +182,7 @@ def prepare_dataset(tokenizer):
     def prepare_prompt(example):
         """Create simplified prompt structure"""
         return {
-            "instruction": f"Tell me about {example['topic']}", 
+            "instruction": f"You are a helpful assistant. Tell me about {example['topic']}", 
             "output": example["output"]
         }
 
@@ -373,6 +371,7 @@ def get_training_args() -> TrainingArguments:
     """
     return TrainingArguments(
         output_dir="./results",
+        run_name="complaint-model-training",
         num_train_epochs=3,                    # Total number of training epochs
         
         # Batch Size Configuration
@@ -396,7 +395,7 @@ def get_training_args() -> TrainingArguments:
         # Training Schedule
         # WSL2's better I/O handling makes frequent evaluations less costly
         warmup_steps=100,                      # Standard warmup for stability
-        evaluation_strategy="steps",           # Regular evaluation intervals
+        eval_strategy="steps",           # Regular evaluation intervals
         eval_steps=100,                        # Evaluate every 100 steps
         save_strategy="steps",                 # Checkpoint intervals
         save_steps=100,                        # Save every 100 steps

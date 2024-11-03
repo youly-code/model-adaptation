@@ -12,6 +12,7 @@ wandb/
 .wandb/
 .venv/
 Python*/
+results/
 
 
 
