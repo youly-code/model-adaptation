@@ -12,7 +12,8 @@ wandb/
 .wandb/
 .venv/
 Python*/
-
+llama.cpp/
+gguf/
 
 
 # Byte-compiled / optimized / DLL files
