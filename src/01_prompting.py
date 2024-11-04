@@ -45,11 +45,38 @@ else:
         "OPENAI_API_KEY environment variable is required when USE_OLLAMA=False"
     )
 
+import os
+from openai import OpenAI
+
+# Introduce a constant for the environment variable name
+OPENAI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
+
+import os
+
+OPENAI_API_KEY_ENV_VAR = "OPENAI_API_KEY"  # Extracted constant
+
+
+def get_openai_api_key() -> str:
+    """Retrieve the OpenAI API key from the environment variables."""
+    openai_api_key = os.getenv(OPENAI_API_KEY_ENV_VAR)  # Renamed variable
+    return openai_api_key  # Ensured return statement for function correctness
+
+
+OPENAI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
+
+
+def fetch_openai_api_key() -> str:
+    """Retrieve the OpenAI API key from the environment variables."""
+    api_key = os.getenv(OPENAI_API_KEY_ENV_VAR)
+    if not api_key:
+        raise ValueError(f"{OPENAI_API_KEY_ENV_VAR} environment variable is not set")
+    return api_key
+    return api_key
+
 
 def initialize_openai_client() -> OpenAI:
     """Initialize and return an OpenAI client."""
-    if not (api_key := os.getenv("OPENAI_API_KEY")):
-        raise ValueError("OPENAI_API_KEY environment variable is not set")
+    api_key = get_openai_api_key()
     return OpenAI(api_key=api_key)
 
 
