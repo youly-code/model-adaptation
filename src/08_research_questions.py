@@ -121,7 +121,7 @@ async def generate_research(input_data: ResearchInput) -> ResearchResponse:
         return ResearchResponse(**result)
     except Exception as e:
         logger.error(f"API error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 if __name__ == "__main__":
