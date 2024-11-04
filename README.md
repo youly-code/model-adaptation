@@ -108,6 +108,28 @@ The codebase explores several key areas of model adaptation:
      - Consensus building algorithms
      - Debate simulation
      - Research methodology adaptation
+  
+7. **Sentiment Analysis and Research Question Generation** (`07_sentiment_analysis.py`)
+   - LLM-based sentiment analysis using Ollama
+   - Research question generation for academic topics
+   - Asynchronous API endpoints with FastAPI
+   - Key features:
+     - Sentiment classification (positive/negative/neutral)
+     - Detailed sentiment explanations
+     - Structured research question generation
+     - Main and sub-question formulation
+     - Robust error handling and logging
+     - Resource management with context managers
+     - Response parsing and validation
+     - Cached client connections
+     - RESTful API endpoints
+   - Support for:
+     - Custom text analysis
+     - Academic research planning
+     - Scalable API deployment
+     - Performance optimization
+     - Structured response formats
+
 
 ## Installation
 
