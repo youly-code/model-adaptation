@@ -39,3 +39,11 @@ pydantic
 # Optional - for testing
 pytest
 
+# BLEU score
+nltk
+
+# ROUGE score
+rouge-score
+
+# Validation
+evaluate
