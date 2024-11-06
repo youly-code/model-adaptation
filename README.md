@@ -109,15 +109,12 @@ The codebase explores several key areas of model adaptation:
      - Debate simulation
      - Research methodology adaptation
   
-7. **Sentiment Analysis and Research Question Generation** (`07_sentiment_analysis.py`)
+7. **Sentiment Analysis** (`07_sentiment_analysis.py`)
    - LLM-based sentiment analysis using Ollama
-   - Research question generation for academic topics
    - Asynchronous API endpoints with FastAPI
    - Key features:
      - Sentiment classification (positive/negative/neutral)
      - Detailed sentiment explanations
-     - Structured research question generation
-     - Main and sub-question formulation
      - Robust error handling and logging
      - Resource management with context managers
      - Response parsing and validation
@@ -125,10 +122,122 @@ The codebase explores several key areas of model adaptation:
      - RESTful API endpoints
    - Support for:
      - Custom text analysis
-     - Academic research planning
      - Scalable API deployment
      - Performance optimization
      - Structured response formats
+
+8. **Research Question Generation** (`08_research_questions.py`)
+   - LLM-based research question generation using Ollama
+   - FastAPI-based REST endpoints
+   - Key features:
+     - Main question generation
+     - Sub-question derivation
+     - Academic rigor validation
+     - Structured response format
+   - Support for:
+     - Asynchronous processing
+     - Resource management
+     - Error handling
+     - Response validation
+     - Client caching
+     - RESTful API design
+
+9. **Semantic Data Analysis** (`09_semantic_data_analysis.py`)
+   - Intelligent data field analysis and categorization
+   - Pattern recognition using embeddings
+   - Data categories:
+     - Numeric, Text, Metadata
+     - Mixed types
+     - JSON structures
+   - Field patterns:
+     - Identifiers
+     - Personal information
+     - Temporal data
+     - Financial data
+     - Categorical data
+     - Measurements
+     - Location data
+     - Contact information
+     - System metadata
+     - User preferences
+   - Visualization features:
+     - Color-coded categories
+     - Quality indicators
+     - Complexity markers
+     - Pattern grouping
+     - Detailed statistics
+
+10. **Complex Data Analysis** (`10_semantic_complex_data_analysis.py`)
+    - Advanced analysis for enterprise data structures
+    - Enhanced pattern recognition
+    - Support for:
+      - Nested JSON structures
+      - Mixed data types
+      - Multi-value fields
+      - Inconsistent formats
+    - Analysis features:
+      - Hierarchical data handling
+      - Format validation
+      - Anomaly detection
+      - Quality scoring
+    - Enterprise patterns:
+      - Department hierarchies
+      - Compensation structures
+      - Performance metrics
+      - System metadata
+      - Contact details
+      - Temporal sequences
+
+11. **LLM Benchmarking** (`11_llm_benchmark.py`)
+    - Comprehensive model comparison framework
+    - Multiple evaluation metrics:
+      - ROUGE scores (1, 2, L)
+      - BLEU score
+      - Perplexity
+      - BM25 similarity
+    - Complaint-specific metrics:
+      - Negativity scoring
+      - Emotional intensity
+      - Structure analysis
+      - Pattern density
+    - Hardware optimization:
+      - Apple Silicon (MPS) support
+      - CUDA support
+      - CPU fallback
+    - Detailed analysis reporting:
+      - Comparative metrics
+      - Improvement percentages
+      - Statistical significance
+      - Visual progress tracking
+    - Support for:
+      - Custom datasets
+      - Multiple model comparisons
+      - Batch processing
+      - Metric visualization
+
+12. **GGUF Model Conversion** (`12_llm_gguf_conversion.py`)
+    - Automated GGUF format conversion pipeline
+    - Multiple quantization levels:
+      - 2-bit to 8-bit options
+      - FP16 and FP32 support
+      - Size/quality trade-off variants
+    - Hardware-specific optimizations:
+      - Metal support for Apple Silicon
+      - Multi-threaded processing
+    - Hugging Face integration:
+      - Automatic model download
+      - GGUF model upload
+      - Repository management
+    - Key features:
+      - Automated llama.cpp setup
+      - Progress monitoring
+      - Error handling
+      - Resource management
+    - Support for:
+      - Custom quantization methods
+      - Model verification
+      - Batch processing
+      - Version control
 
 ## Installation
 
