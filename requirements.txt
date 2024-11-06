@@ -45,5 +45,8 @@ nltk
 # ROUGE score
 rouge-score
 
+# BM25 score
+rank-bm25
+
 # Validation
 evaluate

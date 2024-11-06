@@ -4,6 +4,32 @@ import sys
 from pathlib import Path
 from typing import List
 from huggingface_hub import create_repo, HfApi
+from enum import Enum
+from typing import List, Optional
+import dotenv
+
+dotenv.load_dotenv()
+
+
+class GGUFQuantization(Enum):
+    """Available GGUF quantization levels."""
+
+    Q2_K = "q2_K"  # 2-bit quantization with variable K
+    Q3_K_S = "q3_K_S"  # 3-bit quantization with variable K and small context
+    Q3_K_M = "q3_K_M"  # 3-bit quantization with variable K and medium context
+    Q3_K_L = "q3_K_L"  # 3-bit quantization with variable K and large context
+    Q4_0 = "q4_0"  # 4-bit quantization (legacy)
+    Q4_K_S = "q4_K_S"  # 4-bit quantization with variable K and small context
+    Q4_K_M = "q4_K_M"  # 4-bit quantization with variable K and medium context
+    Q4_1 = "q4_1"  # 4-bit quantization (alternative)
+    Q5_0 = "q5_0"  # 5-bit quantization (legacy)
+    Q5_K_S = "q5_K_S"  # 5-bit quantization with variable K and small context
+    Q5_K_M = "q5_K_M"  # 5-bit quantization with variable K and medium context
+    Q5_1 = "q5_1"  # 5-bit quantization (alternative)
+    Q6_K = "q6_K"  # 6-bit quantization with variable K
+    Q8_0 = "q8_0"  # 8-bit quantization
+    F16 = "f16"  # 16-bit floating point
+    F32 = "f32"  # 32-bit floating point
 
 
 class LLMConverter:
@@ -16,7 +42,7 @@ class LLMConverter:
     ):
         self.model_id = model_id
         self.model_name = model_id.split("/")[-1]
-        self.quantization_methods = [m.strip() for m in quantization_methods]
+        self.quantization_methods = quantization_methods
         self.hf_token = hf_token
         self.username = username
         self.base_path = Path.cwd()
@@ -107,7 +133,7 @@ class LLMConverter:
     def quantize_model(self, fp16_path: Path) -> None:
         """Quantize the model using specified methods."""
         llamacpp_path = self.base_path / "llama.cpp"
-        quantize_path = llamacpp_path / "llama-quantize"  # Updated binary name
+        quantize_path = llamacpp_path / "llama-quantize"
 
         if not quantize_path.exists():
             raise FileNotFoundError(
@@ -116,14 +142,17 @@ class LLMConverter:
             )
 
         for method in self.quantization_methods:
-            output_path = (
-                Path(self.model_name)
-                / f"{self.model_name.lower()}.{method.upper()}.gguf"
+            # Get the value from the enum
+            method_str = (
+                method.value if isinstance(method, GGUFQuantization) else method
             )
-            print(f"Quantizing with {method} to {output_path}")
+            output_path = (
+                Path(self.model_name) / f"{self.model_name.lower()}.{method_str}.gguf"
+            )
+            print(f"Quantizing with {method_str} to {output_path}")
 
             subprocess.run(
-                [str(quantize_path), str(fp16_path), str(output_path), method],
+                [str(quantize_path), str(fp16_path), str(output_path), method_str],
                 check=True,
             )
 
@@ -178,16 +207,40 @@ class LLMConverter:
 def main():
     # Configuration
     MODEL_ID = "leonvanbokhorst/Llama-3.2-1B-Instruct-Complaint"
-    QUANTIZATION_METHODS = ["q4_k_m", "q5_k_m"]
     HF_TOKEN = os.getenv("HF_TOKEN")
     USERNAME = "leonvanbokhorst"
 
+    # Validate HF_TOKEN
+    if not HF_TOKEN:
+        raise ValueError(
+            "HF_TOKEN environment variable not set. Please set it with your Hugging Face token:\n"
+            "export HF_TOKEN='your_token_here'"
+        )
+
+    # Use specific quantization methods
     converter = LLMConverter(
         model_id=MODEL_ID,
-        quantization_methods=QUANTIZATION_METHODS,
         hf_token=HF_TOKEN,
         username=USERNAME,
+        quantization_methods=[
+            GGUFQuantization.Q2_K,    # Smallest, lowest quality
+            GGUFQuantization.Q3_K_S,   
+            GGUFQuantization.Q3_K_M,   
+            GGUFQuantization.Q3_K_L,   
+            GGUFQuantization.Q4_0,     
+            GGUFQuantization.Q4_K_S,   
+            GGUFQuantization.Q4_K_M,   # Good balance of size/quality
+            GGUFQuantization.Q4_1,     
+            GGUFQuantization.Q5_0,     
+            GGUFQuantization.Q5_K_S,   
+            GGUFQuantization.Q5_K_M,   
+            GGUFQuantization.Q5_1,     
+            GGUFQuantization.Q6_K,     
+            GGUFQuantization.Q8_0,     # High quality, larger size
+        ],
     )
+
+    # Run the conversion
     converter.run()
 
 
