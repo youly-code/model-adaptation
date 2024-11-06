@@ -17,6 +17,7 @@ results/
 llama.cpp/
 gguf/
 data/
+Llama-3.2-1B-Instruct-Complaint/
 
 
 
@@ -184,3 +185,4 @@ cython_debug/
 #.idea/
 .vscode/
 .vscode/
+
