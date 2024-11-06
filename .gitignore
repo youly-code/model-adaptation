@@ -4,6 +4,7 @@
 .cursorrules  
 ./checkpoints/
 ./logs/
+/lora*
 .pytest_cache/
 .benchmarks/
 benchmark*/
@@ -11,7 +12,9 @@ complaint*/
 wandb/
 .wandb/
 .venv/
+Python*/
 results/
+llama.cpp/
 gguf/
 data/
 
