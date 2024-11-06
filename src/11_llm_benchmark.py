@@ -17,6 +17,8 @@ import nltk
 from typing import Tuple
 from textblob import TextBlob
 import re
+from rank_bm25 import BM25Okapi
+from nltk.tokenize import word_tokenize
 
 # Download required NLTK data
 nltk.download("punkt")
@@ -160,14 +162,14 @@ class ComplaintModelBenchmark:
         blob = TextBlob(text)
         sentiment_polarity = blob.sentiment.polarity
         sentiment_subjectivity = blob.sentiment.subjectivity
-        
+
         # Convert polarity to negativity score (invert and normalize to 0-1)
         negativity_score = (sentiment_polarity * -1 + 1) / 2
-        
+
         # Emotional Intensity (combination of subjectivity and pattern matching)
         emotional_words = len(re.findall(self.complaint_patterns['emotional_intensifiers'], text.lower()))
         emotional_intensity = (emotional_words / len(text.split()) + sentiment_subjectivity) / 2
-        
+
         # Structure Analysis
         structure_elements = {
             'problem': bool(re.search(self.complaint_patterns['problem_indicators'], text.lower())),
@@ -175,14 +177,14 @@ class ComplaintModelBenchmark:
             'consequence': bool(re.search(self.complaint_patterns['negative_consequences'], text.lower()))
         }
         structure_score = sum(structure_elements.values()) / len(structure_elements)
-        
-        # Pattern Density Score
-        total_patterns = 0
-        for pattern in self.complaint_patterns.values():
-            total_patterns += len(re.findall(pattern, text.lower()))
+
+        total_patterns = sum(
+            len(re.findall(pattern, text.lower()))
+            for pattern in self.complaint_patterns.values()
+        )
         words = len(text.split())
         pattern_density = min(1.0, total_patterns / (words * 0.3))  # Normalize to max of 1
-        
+
         return {
             "negativity_score": negativity_score,
             "emotional_intensity": emotional_intensity,
@@ -229,6 +231,46 @@ class ComplaintModelBenchmark:
         complaint_metrics = self.calculate_complaint_metrics(generated_text)
         metrics.update(complaint_metrics)
 
+        # Add BM25 (Best Match 25) scoring when reference text is available
+        if reference_text:
+            """
+            BM25 (Best Match 25) Scoring Explanation:
+            
+            BM25 is a ranking function that:
+            1. Estimates relevance of documents based on term frequency (TF) and inverse document frequency (IDF)
+            2. Improves on basic TF-IDF by adding length normalization and diminishing returns for term frequency
+            
+            Formula: BM25 = IDF * (TF * (k1 + 1)) / (TF + k1 * (1 - b + b * (docLength/avgDocLength)))
+            
+            Where:
+            - IDF: Inverse Document Frequency (importance of term in corpus)
+            - TF: Term Frequency (frequency of term in document)
+            - k1: Term frequency saturation parameter (default=1.5)
+            - b: Length normalization parameter (default=0.75)
+            
+            Advantages for complaint comparison:
+            1. Weights distinctive complaint terms more heavily
+            2. Prevents over-emphasis on repeated terms
+            3. Accounts for varying complaint lengths
+            4. Better handles domain-specific vocabulary
+            """
+            
+            # Tokenize both texts into words, converting to lowercase for fair comparison
+            tokenized_reference = word_tokenize(reference_text.lower())
+            tokenized_generated = word_tokenize(generated_text.lower())
+            
+            # Create BM25 model using reference text as the corpus
+            # BM25Okapi uses the Okapi implementation with default parameters:
+            # k1=1.5 (term frequency saturation)
+            # b=0.75 (length normalization)
+            bm25 = BM25Okapi([tokenized_reference])
+            
+            # Score generated text against reference
+            # Higher scores indicate better matching of important terms
+            # Returns array of scores (one per document in corpus)
+            bm25_score = bm25.get_scores(tokenized_generated)[0]
+            metrics["bm25_score"] = float(bm25_score)  # Convert numpy float to Python float
+        
         return metrics
 
     def run_benchmark(self, num_samples: int = 100) -> Dict[str, Any]:
@@ -253,11 +295,11 @@ class ComplaintModelBenchmark:
                 "rougeL": [],
                 "bleu": [],
                 "perplexity": [],
-                # Add new complaint-specific metrics
                 "negativity_score": [],
                 "emotional_intensity": [],
                 "structure_score": [],
                 "complaint_patterns_score": [],
+                "bm25_score": [],
             },
             "ref": {
                 "rouge1": [],
@@ -265,11 +307,11 @@ class ComplaintModelBenchmark:
                 "rougeL": [],
                 "bleu": [],
                 "perplexity": [],
-                # Add new complaint-specific metrics
                 "negativity_score": [],
                 "emotional_intensity": [],
                 "structure_score": [],
                 "complaint_patterns_score": [],
+                "bm25_score": [],
             },
         }
 
@@ -303,8 +345,9 @@ class ComplaintModelBenchmark:
 
             # Update running averages
             for metric in ft_metrics:
-                running_metrics["ft"][metric].append(ft_metrics[metric])
-                running_metrics["ref"][metric].append(ref_metrics[metric])
+                if metric in running_metrics["ft"]:
+                    running_metrics["ft"][metric].append(ft_metrics[metric])
+                    running_metrics["ref"][metric].append(ref_metrics[metric])
 
             results["fine_tuned_model"].append(ft_response)
             results["reference_model"].append(ref_response)
@@ -526,6 +569,16 @@ class ComplaintModelBenchmark:
         print(f"  Fine-tuned: {ft['complaint_patterns_score']:.3f} | Reference: {ref['complaint_patterns_score']:.3f}")
         pattern_improvement = ((ft['complaint_patterns_score'] - ref['complaint_patterns_score']) / ref['complaint_patterns_score']) * 100
         print(f"  Improvement: {pattern_improvement:+.1f}%")
+
+        print("\nLexical Similarity Metrics:")
+        print("BM25 Score (Best Match 25):")
+        print(f"  Fine-tuned: {ft['bm25_score']:.3f} | Reference: {ref['bm25_score']:.3f}")
+        bm25_improvement = ((ft['bm25_score'] - ref['bm25_score']) / ref['bm25_score']) * 100
+        print(f"  Improvement: {bm25_improvement:+.1f}%")
+        print("  → Measures keyword importance with:")
+        print("    • Term frequency saturation (prevents over-emphasis on repetition)")
+        print("    • Length normalization (accounts for complaint size)")
+        print("    • Inverse document frequency (weights distinctive terms higher)")
 
         # Overall assessment
         print("=== ANALYSIS ===")
