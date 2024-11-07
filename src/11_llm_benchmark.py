@@ -65,7 +65,6 @@ class ComplaintModelBenchmark:
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
             device_map="auto",
-            token=HF_TOKEN,
             torch_dtype=torch.float16,
         ).to(
             self.device
@@ -73,7 +72,6 @@ class ComplaintModelBenchmark:
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
-            token=HF_TOKEN,
         )
 
         # Load reference model for comparison
@@ -120,8 +118,22 @@ class ComplaintModelBenchmark:
         - top_p=0.9: Nucleus sampling for natural language variation
         - do_sample=True: Enables probabilistic sampling
         """
+        # Use the new prompt template
+        formatted_prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+Cutting Knowledge Date: December 2023
+Today Date: {datetime.now().strftime('%d %b %Y')}
+
+You are a helpful assistant <|eot_id|>
+
+<|start_header_id|>user <|end_header_id|>
+
+{prompt} <|eot_id|>
+<|start_header_id|>assistant <|end_header_id|>
+"""
+
         inputs = tokenizer(
-            prompt,
+            formatted_prompt,
             return_tensors="pt",
             padding=True,
             truncation=True,
@@ -273,10 +285,20 @@ class ComplaintModelBenchmark:
         
         return metrics
 
+    def clear_model_caches(self):
+        """
+        Clear model caches to free up memory.
+        """
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     def run_benchmark(self, num_samples: int = 100) -> Dict[str, Any]:
         """
         Run comprehensive benchmark comparing models with detailed progress reporting.
         """
+        # Clear caches before starting the benchmark
+        self.clear_model_caches()
+
         dataset = load_dataset("leonvanbokhorst/synthetic-complaints-v2")["train"]
         test_samples = dataset.select(range(num_samples))
 
@@ -379,8 +401,8 @@ class ComplaintModelBenchmark:
                 # Print sample outputs
                 tqdm.write("\nSample Outputs:")
                 tqdm.write("Topic: " + sample["topic"])
-                tqdm.write("Fine-tuned (first 100 chars): " + ft_response[:100] + "...")
-                tqdm.write("Reference (first 100 chars): " + ref_response[:100] + "...")
+                tqdm.write("Fine-tuned (first 256 chars): " + ft_response[:256])
+                tqdm.write("Reference (first 256 chars): " + ref_response[:256])
                 tqdm.write("\n" + "=" * 50)
 
             # Print warning if metrics are concerning
