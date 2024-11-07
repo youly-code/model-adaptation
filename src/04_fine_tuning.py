@@ -21,6 +21,7 @@ from datetime import datetime
 
 dotenv.load_dotenv()
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 
 def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
@@ -156,8 +157,21 @@ def filter_quality(example: Dict[str, Any]) -> bool:
     return special_char_ratio <= 0.2
 
 
+def format_prompt(instruction: str, response: str = "") -> str:
+    """Format the prompt for the model with emphasis on positive and helpful responses."""
+    return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+Cutting Knowledge Date: December 2023
+Today Date: 23 July 2024
+
+You are a helpful and polite assistant<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Tell me about {instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+{response}<|eot_id|>"""
+
+
 def prepare_dataset(tokenizer):
-    """Prepare dataset with Alpaca-style prompt template"""
     dataset = load_dataset("leonvanbokhorst/synthetic-complaints-v2")
 
     # Use full validation set and shuffle
@@ -181,15 +195,11 @@ def prepare_dataset(tokenizer):
         return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 Cutting Knowledge Date: December 2023
-Today Date: {datetime.now().strftime('%d %b %Y')}
+Today Date: 23 July 2024
 
-You are a helpful AI assistant.<|eot_id|>
+You are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>
 
-<|start_header_id|>user<|end_header_id|>
-
-{instruction}<|eot_id|>
-
-<|start_header_id|>assistant<|end_header_id|>
+Tell me about {instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
 {response}<|eot_id|>"""
 
@@ -250,6 +260,7 @@ def inference_example(model, tokenizer, prompt: str) -> str:
     try:
         device = model.device
         formatted_prompt = format_prompt(prompt)
+        print(f"Formatted Prompt: {formatted_prompt}")
 
         model_inputs = tokenizer(
             formatted_prompt,
@@ -259,6 +270,8 @@ def inference_example(model, tokenizer, prompt: str) -> str:
             max_length=256,
             return_token_type_ids=False,
         ).to(device)
+
+        print(f"Tokenized Input IDs: {model_inputs['input_ids']}")
 
         with torch.no_grad():
             outputs = model.generate(
@@ -276,7 +289,10 @@ def inference_example(model, tokenizer, prompt: str) -> str:
                 eos_token_id=tokenizer.eos_token_id,
             )
 
+        print(f"Raw Output IDs: {outputs}")
+
         response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        print(f"Decoded Response: {response}")
 
         # Extract only the assistant's response
         if "<|start_header_id|>assistant<|end_header_id|>" in response:
@@ -372,9 +388,9 @@ def get_training_args() -> TrainingArguments:
         # WSL2 has better memory management than Windows, allowing for more aggressive batching
         # RTX 4090 has 24GB VRAM and WSL2 can utilize it more efficiently
         # Effective batch size = per_device_batch * gradient_accumulation = 8 * 4 = 32
-        per_device_train_batch_size=8,  # Optimal for 24GB VRAM under WSL2
-        per_device_eval_batch_size=8,  # Match training batch size
-        gradient_accumulation_steps=4,  # Accumulate for larger effective batch
+        per_device_train_batch_size=12,  # Optimal for 24GB VRAM under WSL2
+        per_device_eval_batch_size=12,  # Match training batch size
+        gradient_accumulation_steps=6,  # Accumulate for larger effective batch
         # Data Loading Optimization
         # WSL2's Linux kernel provides better process management than Windows
         # Can use more CPU cores efficiently without system instability

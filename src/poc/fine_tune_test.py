@@ -21,7 +21,7 @@ if tokenizer.pad_token is None:
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
 # Load the model with exact same settings as training
-device = "mps" if torch.backends.mps.is_available() else "cpu"
+device = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
 print(f"🖥️ Using device: {device}")
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_ID,
@@ -36,15 +36,19 @@ print("Model config:", model.config)
 print("Model type:", type(model))
 
 # Add this before the generate_complaint function
-PROMPT_TEMPLATE = """### Instruction:
-{0}
+PROMPT_TEMPLATE = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-### Response:
+Cutting Knowledge Date: December 2023
+Today Date: 23 July 2024
+
+You are a helpful assistant<|eot_id|><|start_header_id|>user <|end_header_id|>
+
+{0}<|eot_id|><|start_header_id|>assistant <|end_header_id|>
 """
 
 def generate_complaint(prompt: str) -> str:
     # Make the instruction more explicit
-    instruction = f"Write an angry complaint about {prompt}. Be specific about why you are upset and express your frustration clearly."
+    instruction = f"Tell me about {prompt}."
     
     formatted_prompt = PROMPT_TEMPLATE.format(instruction)
     
