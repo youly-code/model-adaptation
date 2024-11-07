@@ -315,7 +315,7 @@ class ComplaintModelBenchmark:
             },
         }
 
-        self._extracted_from_run_benchmark_21(
+        self.print_results(
             "\n=== STARTING BENCHMARK ===",
             "Samples to process: ",
             num_samples,
@@ -393,7 +393,7 @@ class ComplaintModelBenchmark:
                     f"\n⚠️ Very low BLEU score in fine-tuned model: {ft_metrics['bleu']:.4f}"
                 )
 
-        self._extracted_from_run_benchmark_21(
+        self.print_results(
             "\n=== BENCHMARK COMPLETE ===",
             "Total samples processed: ",
             num_samples,
@@ -416,7 +416,7 @@ class ComplaintModelBenchmark:
         return results
 
     # TODO Rename this here and in `run_benchmark`
-    def _extracted_from_run_benchmark_21(self, arg0, arg1, num_samples, arg3):
+    def print_results(self, arg0, arg1, num_samples, arg3):
         print(arg0)
         print(f"{arg1}{num_samples}")
         print(arg3)
