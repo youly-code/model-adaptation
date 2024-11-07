@@ -7,6 +7,7 @@ from huggingface_hub import create_repo, HfApi
 from enum import Enum
 from typing import List, Optional
 import dotenv
+from datetime import datetime
 
 dotenv.load_dotenv()
 
@@ -116,6 +117,8 @@ class LLMConverter:
         print(f"Input path: {model_path}")
         print(f"Output path: {fp16_path}")
 
+        # Add --vocab-type spm to specify SentencePiece tokenizer
+        # Add --context-length to match the original model's context window
         subprocess.run(
             [
                 "python",
@@ -124,6 +127,11 @@ class LLMConverter:
                 str(fp16_path),
                 "--outtype",
                 "f16",
+                "--vocab-type",
+                "bpe",
+                "--special-tokens",
+                "--context-length",
+                "4096",
                 str(model_path),
             ],
             check=True,
@@ -202,6 +210,10 @@ class LLMConverter:
         except Exception as e:
             print(f"Unexpected error: {e}", file=sys.stderr)
             sys.exit(1)
+
+
+def format_prompt(system_msg: str, user_msg: str) -> str:
+    return f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nCutting Knowledge Date: December 2023\nToday Date: {datetime.now().strftime('%d %b %Y')}\n\n{system_msg}<|eot_id|>\n\n<|start_header_id|>user<|end_header_id|>\n\n{user_msg}<|eot_id|>\n\n<|start_header_id|>assistant<|end_header_id|>\n\n"
 
 
 def main():
