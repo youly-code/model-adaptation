@@ -21,6 +21,10 @@ plotly
 datasets
 huggingface-hub
 
+# Image Processing
+pillow
+imagehash
+
 # NLP and Text Processing
 textblob
 nltk
@@ -50,3 +54,7 @@ rank-bm25
 
 # Validation
 evaluate
+
+# Image Scraper
+icrawler
+fake-useragent
