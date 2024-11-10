@@ -108,7 +108,12 @@ The codebase explores several key areas of model adaptation:
      - Consensus building algorithms
      - Debate simulation
      - Research methodology adaptation
-  
+     - Group dynamics modeling
+     - Emergent behavior analysis
+     - Social network formation
+     - Cognitive load simulation
+     - Narrative field mapping
+
 7. **Sentiment Analysis** (`07_sentiment_analysis.py`)
    - LLM-based sentiment analysis using Ollama
    - Asynchronous API endpoints with FastAPI
@@ -238,6 +243,67 @@ The codebase explores several key areas of model adaptation:
       - Model verification
       - Batch processing
       - Version control
+
+13. **Narrative Field Analysis** (`13_narrative_field.py`)
+    - Complex social system modeling
+    - Narrative emergence tracking
+    - Key features:
+      - Field potential mapping
+      - Belief propagation analysis
+      - Social influence modeling
+      - Narrative convergence detection
+      - Group cohesion metrics
+    - Support for:
+      - Real-time field visualization
+      - Multi-scale analysis
+      - Temporal evolution tracking
+      - Intervention simulation
+
+14. **PyTorch Experiments** (`src/poc/`)
+    - Neural Network Architecture Studies
+      - ResNet Implementation (`resnet.py`, `resnet_02.py`, `resnet_03.py`)
+        - Traditional vs ResNet comparison
+        - Gradient flow visualization
+        - Skip connection analysis
+        - Layer activation tracking
+        - Performance benchmarking
+      
+    - MNIST Classification (`pytorch_poc.py`)
+      - Custom neural network implementation
+      - Apple Silicon (MPS) optimization
+      - Training visualization
+      - Batch processing
+      - Progress tracking
+      - Real-time accuracy monitoring
+    
+    - Loss Function Analysis (`pytorch_visualize_loss.py`)
+      - Cross-entropy loss visualization
+      - Prediction confidence analysis
+      - Scenario-based comparisons
+      - Error analysis tools
+    
+    - Hardware Optimization
+      - Apple Silicon (M-series) support
+      - CUDA compatibility
+      - CPU fallback handling
+      - Memory management
+      - Batch size optimization
+    
+    - Training Features
+      - Real-time visualization
+      - Progress tracking
+      - Metric logging
+      - Model checkpointing
+      - Early stopping
+      - Learning rate scheduling
+
+## Development Standards
+
+- PEP 8 and black formatting
+- Type hints (PEP 484)
+- Comprehensive testing (pytest)
+- CI/CD pipeline integration
+- Documentation with Google-style docstrings
 
 ## Installation
 
