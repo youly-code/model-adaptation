@@ -1,0 +1,18 @@
+default:
+  min_resolution: [512, 512]
+  confidence_threshold: 0.75
+  search_modifiers:
+    - "high quality photo"
+    - "professional photograph"
+    # ... more modifiers ...
+
+concept_specific:
+  electronics:
+    additional_modifiers:
+      - "technical specifications"
+      - "product details"
+  furniture:
+    additional_modifiers:
+      - "interior design"
+      - "room setting"
+  # ... more concepts ... 
