@@ -245,22 +245,7 @@ The codebase explores several key areas of model adaptation:
       - Batch processing
       - Version control
 
-13. **Narrative Field Analysis** (`13_narrative_field.py`)
-    - Complex social system modeling
-    - Narrative emergence tracking
-    - Key features:
-      - Field potential mapping
-      - Belief propagation analysis
-      - Social influence modeling
-      - Narrative convergence detection
-      - Group cohesion metrics
-    - Support for:
-      - Real-time field visualization
-      - Multi-scale analysis
-      - Temporal evolution tracking
-      - Intervention simulation
-
-14. **PyTorch Experiments** (`src/poc/`)
+**PyTorch Experiments** (`src/poc/`)
     - Neural Network Architecture Studies
       - ResNet Implementation (`resnet.py`, `resnet_02.py`, `resnet_03.py`)
         - Traditional vs ResNet comparison
