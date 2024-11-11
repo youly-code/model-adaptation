@@ -148,29 +148,30 @@ The codebase explores several key areas of model adaptation:
      - RESTful API design
 
 9. **Semantic Data Analysis** (`09_semantic_data_analysis.py`)
-   - Intelligent data field analysis and categorization
-   - Pattern recognition using embeddings
-   - Data categories:
-     - Numeric, Text, Metadata
-     - Mixed types
-     - JSON structures
-   - Field patterns:
-     - Identifiers
-     - Personal information
-     - Temporal data
-     - Financial data
-     - Categorical data
-     - Measurements
-     - Location data
-     - Contact information
-     - System metadata
-     - User preferences
-   - Visualization features:
-     - Color-coded categories
-     - Quality indicators
-     - Complexity markers
-     - Pattern grouping
-     - Detailed statistics
+
+- Intelligent data field analysis and categorization
+- Pattern recognition using embeddings
+- Data categories:
+  - Numeric, Text, Metadata
+  - Mixed types
+  - JSON structures
+- Field patterns:
+  - Identifiers
+  - Personal information
+  - Temporal data
+  - Financial data
+  - Categorical data
+  - Measurements
+  - Location data
+  - Contact information
+  - System metadata
+  - User preferences
+- Visualization features:
+  - Color-coded categories
+  - Quality indicators
+  - Complexity markers
+  - Pattern grouping
+  - Detailed statistics
 
 10. **Complex Data Analysis** (`10_semantic_complex_data_analysis.py`)
     - Advanced analysis for enterprise data structures
@@ -267,7 +268,7 @@ The codebase explores several key areas of model adaptation:
         - Skip connection analysis
         - Layer activation tracking
         - Performance benchmarking
-      
+
     - MNIST Classification (`pytorch_poc.py`)
       - Custom neural network implementation
       - Apple Silicon (MPS) optimization
@@ -275,20 +276,20 @@ The codebase explores several key areas of model adaptation:
       - Batch processing
       - Progress tracking
       - Real-time accuracy monitoring
-    
+
     - Loss Function Analysis (`pytorch_visualize_loss.py`)
       - Cross-entropy loss visualization
       - Prediction confidence analysis
       - Scenario-based comparisons
       - Error analysis tools
-    
+
     - Hardware Optimization
       - Apple Silicon (M-series) support
       - CUDA compatibility
       - CPU fallback handling
       - Memory management
       - Batch size optimization
-    
+
     - Training Features
       - Real-time visualization
       - Progress tracking
