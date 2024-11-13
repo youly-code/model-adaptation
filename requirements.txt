@@ -59,3 +59,10 @@ evaluate
 # Image Scraper
 icrawler
 fake-useragent
+
+# Meeting Recorder
+sounddevice
+wave
+
+# Whisper but then faster jonguh
+faster-whisper
