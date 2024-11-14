@@ -9,6 +9,7 @@ openai
 sentence-transformers
 transformers
 torch
+torch-geometric
 peft
 bitsandbytes
 
@@ -20,6 +21,10 @@ matplotlib
 plotly
 datasets
 huggingface-hub
+
+# Image Processing
+pillow
+imagehash
 
 # NLP and Text Processing
 textblob
@@ -39,3 +44,25 @@ pydantic
 # Optional - for testing
 pytest
 
+# BLEU score
+nltk
+
+# ROUGE score
+rouge-score
+
+# BM25 score
+rank-bm25
+
+# Validation
+evaluate
+
+# Image Scraper
+icrawler
+fake-useragent
+
+# Meeting Recorder
+sounddevice
+wave
+
+# Whisper but then faster jonguh
+faster-whisper

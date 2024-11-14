@@ -17,22 +17,11 @@ from contextlib import contextmanager
 import re
 from huggingface_hub import HfApi
 from datasets import load_dataset
+from datetime import datetime
 
 dotenv.load_dotenv()
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-alpaca_prompt = """### Instruction:
-{0}
-
-### Input:
-
-
-### Response:
-{1}"""
-
 HF_TOKEN = os.getenv("HF_TOKEN")
-WANDB_API_KEY = os.getenv("WANDB_API_KEY")
-wandb.login(key=WANDB_API_KEY)
 
 
 def initialize_tokenizer(model_name: str, hf_token: str) -> AutoTokenizer:
@@ -168,8 +157,21 @@ def filter_quality(example: Dict[str, Any]) -> bool:
     return special_char_ratio <= 0.2
 
 
+def format_prompt(instruction: str, response: str = "") -> str:
+    """Format the prompt for the model with emphasis on positive and helpful responses."""
+    return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+Cutting Knowledge Date: December 2023
+Today Date: 23 July 2024
+
+You are a helpful and polite assistant<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Tell me about {instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+{response}<|eot_id|>"""
+
+
 def prepare_dataset(tokenizer):
-    """Prepare dataset with Alpaca-style prompt template"""
     dataset = load_dataset("leonvanbokhorst/synthetic-complaints-v2")
 
     # Use full validation set and shuffle
@@ -182,18 +184,29 @@ def prepare_dataset(tokenizer):
     def prepare_prompt(example):
         """Create simplified prompt structure"""
         return {
-            "instruction": f"You are a helpful assistant. Tell me about {example['topic']}", 
-            "output": example["output"]
+            "instruction": f"You are a helpful assistant. Tell me about {example['topic']}",
+            "output": example["output"],
         }
 
     train_dataset = split_dataset["train"].map(prepare_prompt)
     eval_dataset = split_dataset["test"].map(prepare_prompt)
 
+    def format_prompt(instruction: str, response: str = "") -> str:
+        return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+Cutting Knowledge Date: December 2023
+Today Date: 23 July 2024
+
+You are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Tell me about {instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+{response}<|eot_id|>"""
+
     def tokenize_and_add_length(examples):
         """Tokenize and add length column for group_by_length"""
         texts = [
-            alpaca_prompt.format(examples["instruction"][i], examples["output"][i])
-            + tokenizer.eos_token
+            format_prompt(examples["instruction"][i], examples["output"][i])
             for i in range(len(examples["instruction"]))
         ]
 
@@ -209,35 +222,32 @@ def prepare_dataset(tokenizer):
         # Create labels by copying input_ids
         tokenized["labels"] = tokenized["input_ids"].clone()
 
-        # Add length feature (actual sequence length before padding)
+        # Add length feature
         tokenized["length"] = [
-            len(tokenizer(text, truncation=False)["input_ids"])
-            for text in texts
+            len(tokenizer(text, truncation=False)["input_ids"]) for text in texts
         ]
 
-        # Mask labels before the response section
+        # Mask labels before the assistant section
         for idx, text in enumerate(texts):
-            response_token_ids = tokenizer.encode("### Response:")
+            assistant_token_ids = tokenizer.encode(
+                "<|start_header_id|>assistant<|end_header_id|>"
+            )
             input_ids = tokenized["input_ids"][idx].tolist()
 
-            for i in range(len(input_ids) - len(response_token_ids)):
-                if input_ids[i : i + len(response_token_ids)] == response_token_ids:
-                    tokenized["labels"][idx, : i + len(response_token_ids)] = -100
+            for i in range(len(input_ids) - len(assistant_token_ids)):
+                if input_ids[i : i + len(assistant_token_ids)] == assistant_token_ids:
+                    tokenized["labels"][idx, :i] = -100
                     break
 
         return tokenized
 
     # Use the updated tokenization function
     tokenized_train = train_dataset.map(
-        tokenize_and_add_length,
-        batched=True,
-        remove_columns=train_dataset.column_names
+        tokenize_and_add_length, batched=True, remove_columns=train_dataset.column_names
     )
 
     tokenized_eval = eval_dataset.map(
-        tokenize_and_add_length,
-        batched=True,
-        remove_columns=eval_dataset.column_names
+        tokenize_and_add_length, batched=True, remove_columns=eval_dataset.column_names
     )
 
     print(f"Training samples: {len(tokenized_train)}")
@@ -247,14 +257,10 @@ def prepare_dataset(tokenizer):
 
 
 def inference_example(model, tokenizer, prompt: str) -> str:
-    """Generate responses with simplified prompting"""
     try:
         device = model.device
-
-        # Format prompt using simplified template
-        formatted_prompt = alpaca_prompt.format(
-            prompt, ""  # Empty response section for generation
-        )
+        formatted_prompt = format_prompt(prompt)
+        print(f"Formatted Prompt: {formatted_prompt}")
 
         model_inputs = tokenizer(
             formatted_prompt,
@@ -264,6 +270,8 @@ def inference_example(model, tokenizer, prompt: str) -> str:
             max_length=256,
             return_token_type_ids=False,
         ).to(device)
+
+        print(f"Tokenized Input IDs: {model_inputs['input_ids']}")
 
         with torch.no_grad():
             outputs = model.generate(
@@ -281,12 +289,17 @@ def inference_example(model, tokenizer, prompt: str) -> str:
                 eos_token_id=tokenizer.eos_token_id,
             )
 
-        # Update response extraction
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        print(f"Raw Output IDs: {outputs}")
 
-        # Extract only the response part after "### Response:"
-        if "### Response:" in response:
-            response = response.split("### Response:")[-1].strip()
+        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        print(f"Decoded Response: {response}")
+
+        # Extract only the assistant's response
+        if "<|start_header_id|>assistant<|end_header_id|>" in response:
+            response = response.split("<|start_header_id|>assistant<|end_header_id|>")[
+                -1
+            ]
+            response = response.split("<|eot_id|>")[0].strip()
 
         return response
 
@@ -296,15 +309,15 @@ def inference_example(model, tokenizer, prompt: str) -> str:
 
 
 def save_model(
-    model, 
-    tokenizer, 
-    save_dir: str, 
-    repo_id: str, 
-    hf_token: str, 
-    save_mode: str = "merged"
+    model,
+    tokenizer,
+    save_dir: str,
+    repo_id: str,
+    hf_token: str,
+    save_mode: str = "merged",
 ) -> None:
     """Save model to local directory and HuggingFace Hub.
-    
+
     Args:
         model: The trained model
         tokenizer: The tokenizer
@@ -314,55 +327,53 @@ def save_model(
         save_mode: Either "merged" or "lora" (default: "merged")
     """
     os.makedirs(save_dir, exist_ok=True)
-    
+
     if save_mode == "lora":
         # Save LoRA adapter
         lora_state_dict = {
             k: v.to("cpu")
             for k, v in model.state_dict().items()
-            if any(substr in k for substr in [
-                "lora_A", "lora_B", 
-                "lora_embedding_A", "lora_embedding_B",
-                "lora_scaling"
-            ])
+            if any(
+                substr in k
+                for substr in [
+                    "lora_A",
+                    "lora_B",
+                    "lora_embedding_A",
+                    "lora_embedding_B",
+                    "lora_scaling",
+                ]
+            )
         }
         torch.save(lora_state_dict, os.path.join(save_dir, "adapter_model.bin"))
-        
+
         if hasattr(model, "config"):
             model.config.save_pretrained(save_dir)
         if hasattr(model, "peft_config"):
             model.peft_config["default"].save_pretrained(save_dir)
-            
+
     else:  # merged mode
         model = model.merge_and_unload()
-        model.save_pretrained(
-            save_dir,
-            safe_serialization=True,
-            max_shard_size="2GB"
-        )
-    
+        model.save_pretrained(save_dir, safe_serialization=True, max_shard_size="2GB")
+
     # Save tokenizer in both cases
     tokenizer.save_pretrained(save_dir)
-    
+
     # Upload to Hub
     api = HfApi()
     try:
         api.create_repo(repo_id=repo_id, exist_ok=True, token=hf_token)
         api.upload_folder(
-            folder_path=save_dir,
-            repo_id=repo_id,
-            repo_type="model",
-            token=hf_token
+            folder_path=save_dir, repo_id=repo_id, repo_type="model", token=hf_token
         )
         print(f"\nModel uploaded to: https://huggingface.co/{repo_id}")
-        
+
     except Exception as e:
         print(f"Upload error: {str(e)}")
 
 
 def get_training_args() -> TrainingArguments:
     """Configure training arguments optimized for RTX 4090 under WSL2.
-    
+
     WSL2 advantages over Windows:
     - Better process handling and memory management
     - Direct GPU access through CUDA
@@ -372,16 +383,14 @@ def get_training_args() -> TrainingArguments:
     return TrainingArguments(
         output_dir="./results",
         run_name="complaint-model-training",
-        num_train_epochs=3,                    # Total number of training epochs
-        
+        num_train_epochs=3,  # Total number of training epochs
         # Batch Size Configuration
         # WSL2 has better memory management than Windows, allowing for more aggressive batching
         # RTX 4090 has 24GB VRAM and WSL2 can utilize it more efficiently
         # Effective batch size = per_device_batch * gradient_accumulation = 8 * 4 = 32
-        per_device_train_batch_size=8,         # Optimal for 24GB VRAM under WSL2
-        per_device_eval_batch_size=8,          # Match training batch size
-        gradient_accumulation_steps=4,         # Accumulate for larger effective batch
-        
+        per_device_train_batch_size=12,  # Optimal for 24GB VRAM under WSL2
+        per_device_eval_batch_size=12,  # Match training batch size
+        gradient_accumulation_steps=6,  # Accumulate for larger effective batch
         # Data Loading Optimization
         # WSL2's Linux kernel provides better process management than Windows
         # Can use more CPU cores efficiently without system instability
@@ -389,57 +398,49 @@ def get_training_args() -> TrainingArguments:
         # - Leaving resources for system processes
         # - Maximizing data loading throughput
         # - Avoiding memory contention
-        dataloader_num_workers=12,             # WSL2 handles more workers efficiently
-        dataloader_pin_memory=True,            # Fast GPU transfer via pinned memory
-        
+        dataloader_num_workers=12,  # WSL2 handles more workers efficiently
+        dataloader_pin_memory=True,  # Fast GPU transfer via pinned memory
         # Training Schedule
         # WSL2's better I/O handling makes frequent evaluations less costly
-        warmup_steps=100,                      # Standard warmup for stability
-        eval_strategy="steps",           # Regular evaluation intervals
-        eval_steps=100,                        # Evaluate every 100 steps
-        save_strategy="steps",                 # Checkpoint intervals
-        save_steps=100,                        # Save every 100 steps
-        save_total_limit=3,                    # Manage disk space
-        
+        warmup_steps=100,  # Standard warmup for stability
+        eval_strategy="steps",  # Regular evaluation intervals
+        eval_steps=100,  # Evaluate every 100 steps
+        save_strategy="steps",  # Checkpoint intervals
+        save_steps=100,  # Save every 100 steps
+        save_total_limit=3,  # Manage disk space
         # Optimizer Configuration
         # WSL2's memory management allows for stable training with these settings
-        learning_rate=2e-4,                    # Standard for LoRA fine-tuning
-        weight_decay=0.01,                     # L2 regularization
-        lr_scheduler_type="cosine",            # Smooth LR decay
-        
+        learning_rate=2e-4,  # Standard for LoRA fine-tuning
+        weight_decay=0.01,  # L2 regularization
+        lr_scheduler_type="cosine",  # Smooth LR decay
         # GPU Optimization
         # WSL2 provides direct GPU access via CUDA, making these optimizations fully effective
         # No Windows overhead in the GPU access path
-        fp16=True,                            # Mixed precision training
-        tf32=True,                            # Tensor cores optimization
-        
+        fp16=True,  # Mixed precision training
+        tf32=True,  # Tensor cores optimization
         # Logging Configuration
         # WSL2's filesystem is more efficient for frequent small writes
-        logging_steps=10,                      # Frequent logging is less costly
-        report_to="wandb",                     # Remote metric tracking
-        
+        logging_steps=10,  # Frequent logging is less costly
+        report_to="wandb",  # Remote metric tracking
         # Training Optimizations
         # WSL2's better memory management makes these optimizations more effective
-        group_by_length=True,                 # Efficient sequence batching
-        length_column_name="length",          # Required for length grouping
-        gradient_checkpointing=False,         # Not needed with 24GB VRAM
-        
+        group_by_length=True,  # Efficient sequence batching
+        length_column_name="length",  # Required for length grouping
+        gradient_checkpointing=False,  # Not needed with 24GB VRAM
         # Model Selection
         # WSL2's efficient I/O makes model saving/loading faster
-        load_best_model_at_end=True,          # Keep best checkpoint
-        metric_for_best_model="eval_loss",    # Optimization target
-        greater_is_better=False,              # Minimize loss
-        
+        load_best_model_at_end=True,  # Keep best checkpoint
+        metric_for_best_model="eval_loss",  # Optimization target
+        greater_is_better=False,  # Minimize loss
         # Training Stability
         # WSL2's consistent performance helps maintain stable training
-        max_grad_norm=1.0,                    # Prevent gradient explosions
-        
+        max_grad_norm=1.0,  # Prevent gradient explosions
         # WSL2 Specific Settings
         # WSL2 uses the Linux kernel, so we can skip Windows-specific tweaks
         # - No need for Windows memory optimizations
         # - No need for Windows process handling adjustments
         # - Can use Linux-native CUDA performance
-        use_mps_device=False,                 # WSL2 uses CUDA directly
+        use_mps_device=False,  # WSL2 uses CUDA directly
     )
 
 
@@ -449,15 +450,17 @@ if __name__ == "__main__":
         # Setup
         model, tokenizer = prepare_fine_tuning()
         train_dataset, eval_dataset = prepare_dataset(tokenizer)
-        
-        print(f"\nTraining with {len(train_dataset)} training samples and {len(eval_dataset)} eval samples")
+
+        print(
+            f"\nTraining with {len(train_dataset)} training samples and {len(eval_dataset)} eval samples"
+        )
 
         # Test prompts for callback
         test_prompts = [
             "your neighbor who plays loud music at 3am",
             "the customer service representative who hung up on you",
             "the restaurant that gave you food poisoning",
-            "the delivery driver who left your package in the rain"
+            "the delivery driver who left your package in the rain",
         ]
 
         trainer = Trainer(
@@ -475,8 +478,8 @@ if __name__ == "__main__":
         trainer.train()
 
         # Save model
-        model_name = "unsloth/Llama-3.2-1B-Instruct"
-        merged_name = "Llama-3.2-1B-Instruct-Complaint"
+        model_name = "unsloth/Llama-3.2-3B-Instruct"
+        merged_name = "Llama-3.2-3B-Instruct-Complaint"
         repo_id = f"leonvanbokhorst/{merged_name}"
 
         save_model(
@@ -484,8 +487,8 @@ if __name__ == "__main__":
             tokenizer=tokenizer,
             save_dir=f"./complaint_model/{merged_name}",
             repo_id=repo_id,
-            hf_token=HF_TOKEN,
-            save_mode="merged"
+            hf_token=os.getenv("HF_TOKEN"),
+            save_mode="merged",
         )
 
     finally:
