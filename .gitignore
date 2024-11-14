@@ -7,6 +7,7 @@
 /lora*
 .pytest_cache/
 .benchmarks/
+benchmark*/
 complaint*/
 wandb/
 .wandb/
@@ -16,6 +17,8 @@ results/
 llama.cpp/
 gguf/
 data/
+Llama-3.2-1B-Instruct-Complaint/
+dataset/
 
 
 
@@ -183,3 +186,4 @@ cython_debug/
 #.idea/
 .vscode/
 .vscode/
+
