@@ -1,3 +1,12 @@
+import pytest
+from _pytest.config.argparsing import Parser  # Correct import for Parser
+
+def pytest_addoption(parser: Parser) -> None:
+    parser.addoption("--myoption", action="store", default=None, help="My custom option for pytest")
+
+# additional pytest configurations if any
+
+
 import sys
 import os
 import pytest

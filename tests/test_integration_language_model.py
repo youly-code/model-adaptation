@@ -1,8 +1,23 @@
 import pytest
 from src.language_model import OllamaModel, ResponseError, ConnectionError
 
+
 # Add integration marker
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.integration# tests/test_integration_language_model.py
+
+import pytest
+
+
+@pytest.fixture
+def fixture_setup():
+    # Setup code here
+    yield
+    # Teardown code here
+
+
+def test_temperature_parameter(fixture_setup):
+    # Your test code here
+    assert True  # Replace with your actual assertions
 
 @pytest.fixture
 async def ollama_model():
